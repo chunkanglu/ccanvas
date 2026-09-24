@@ -12,6 +12,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { isTauri } from './backend'
+import { BACKEND_WS_URL } from './fork'
 
 export type Term = {
   /** true when we re-attached to an already-running shell (it survived a
@@ -44,7 +45,7 @@ export type PtyHandlers = {
   onExit: () => void
 }
 
-const WS_URL = 'ws://127.0.0.1:7531'
+const WS_URL = BACKEND_WS_URL
 
 export async function connectPty(opts: PtyOpts, h: PtyHandlers): Promise<Term | null> {
   return isTauri() ? connectTauri(opts, h) : connectWebSocket(opts, h)

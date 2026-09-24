@@ -7,7 +7,9 @@
 import { invoke, convertFileSrc } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 
-const BASE = 'http://127.0.0.1:7531'
+import { BACKEND_HTTP_URL } from './fork'
+
+const BASE = BACKEND_HTTP_URL
 
 /** Running inside the Tauri desktop shell? */
 export function isTauri(): boolean {
@@ -360,7 +362,7 @@ export function mediaUrl(path: string): string | null {
  * `base` is the HTTP origin serving /file, /probe and /transcode:
  *   • Tauri — the in-process media server (media.rs), started on app launch, so
  *     the desktop app is fully self-contained (no `npm run server` needed).
- *   • Web   — the Node backend on port 7531.
+ *   • Web   — the Node backend on the fork-specific port.
  * Returns null when no backend can serve local media.
  */
 export type MediaEndpoint = { base: string; ffmpeg: boolean }
@@ -482,7 +484,7 @@ export async function probeMedia(base: string, path: string): Promise<MediaInfo>
 }
 
 /**
- * Is the HTTP proxy reachable? The proxy lives on the Node server (port 7531),
+ * Is the HTTP proxy reachable? The proxy lives on the fork's Node server,
  * so unlike backendOnline() this always probes HTTP — the desktop app only has
  * it when `npm run server` is also running.
  */

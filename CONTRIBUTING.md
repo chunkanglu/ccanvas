@@ -31,17 +31,31 @@ npm install
 
 ```bash
 npm run app     # native desktop app (Tauri) — the recommended dev loop
-npm run dev     # web app only → http://127.0.0.1:5173
+npm run dev     # fork web app only → http://127.0.0.1:5174
 npm start        # web app + PTY backend (two processes) for browser terminals
-npm run server   # the optional PTY/file backend on 127.0.0.1:7531
+npm run server   # the optional fork PTY/file backend on 127.0.0.1:7532
 ```
 
 ### Build
 
 ```bash
+npm run test:stage0 # fork isolation checks; no Pi process or model calls
 npm run build      # type-check + bundle the web app into dist/
-npm run app:build  # produce native installers in src-tauri/target/release/bundle
+npm run test:app-install # installer/build-wrapper tests; no real Applications writes
+npm run probe:terminal # optional POSIX/zsh line-editing regression; no model calls
+npm run app:install # macOS: unsigned debug build + install to ~/Applications
+npm run app:build   # release build; macOS also installs after success
+npm run app:build -- --debug # faster rebuild + install
+npm run app:bundle # raw Tauri packaging, no automatic local installation
 ```
+
+On macOS, quit **ccanvas Pi** before rebuilding. The local build commands use cached
+Cargo dependencies (`--offline --locked`), install only the fork bundle, register
+Launch Services and request Spotlight indexing. Failed builds never install an old
+artifact. CI/non-macOS runs skip local installation. Use
+`CCANVAS_SKIP_APP_INSTALL=1 npm run app:build -- --debug` to opt out, or
+`npm run app:bundle -- ...` for custom targets/signing/other Tauri flags. Vite
+builds and `npm run app` hot reload do not update the installed app.
 
 ## Project layout
 

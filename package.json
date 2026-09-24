@@ -4,6 +4,11 @@
   "version": "0.5.1",
   "type": "module",
   "scripts": {
+    "test:stage0": "node --test tests/stage0.test.mjs tests/stage0-probe.test.mjs",
+    "test:app-install": "node --test tests/app-install.test.mjs",
+    "probe:pi": "python3 scripts/probe-pi-rpc.py",
+    "probe:pi:tui": "python3 scripts/probe-pi-tui.py",
+    "probe:terminal": "python3 scripts/probe-terminal-editing.py",
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
@@ -11,7 +16,9 @@
     "start": "concurrently -n \"pty,web\" -c \"#e8795a,#6db5a8\" \"npm run server\" \"npm run dev\"",
     "tauri": "tauri",
     "app": "tauri dev",
-    "app:build": "tauri build"
+    "app:build": "node scripts/build-app.mjs",
+    "app:install": "node scripts/build-app.mjs --debug",
+    "app:bundle": "tauri build"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.4.0",

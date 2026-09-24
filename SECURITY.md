@@ -1,5 +1,13 @@
 # Security Policy
 
+## Personal fork status
+
+Phase 0 isolated this fork, but it still inherits upstream's permissive local
+bridge and Tauri capabilities. Separate ports/app data prevent accidental collisions; they are
+**not** an authentication or sandbox boundary. Keep the optional backend stopped
+when not needed. Pi control endpoints must not be added until the bridge's
+origin/authentication boundary is implemented. Upstream policy follows.
+
 ## Supported versions
 
 ccanvas is pre-1.0 and under active development. Security fixes are applied to
@@ -37,7 +45,7 @@ machine**:
 - Terminal and agent widgets run a real PTY in your canvas's working directory
   (in-process in the desktop app, or via the `server/pty-server.mjs` backend in
   the browser).
-- The web-mode backend binds to `127.0.0.1:7531` and exposes shell + filesystem
+- The web-mode backend binds to `127.0.0.1:7532` in this fork and exposes shell + filesystem
   access to local clients. **Do not expose this port to untrusted networks.**
 - `.ccnvs` workspace files describe widgets and layout. Treat workspace files
   from untrusted sources with the same caution you would any project you clone

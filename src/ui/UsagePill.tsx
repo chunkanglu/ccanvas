@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { getUsage, type Usage } from '../lib/backend'
+import { storageKey } from '../lib/fork'
 
 // per-window token budget (tokens). 0 = no bar, just show usage + reset.
-const LIMIT_KEY = 'ccanvas:usageLimit'
+const LIMIT_KEY = storageKey('usageLimit')
 
 function fmtTokens(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1) + 'M'

@@ -3,7 +3,7 @@
 //
 // A checkpoint is a real git object created with `git stash create`, which
 // snapshots tracked changes WITHOUT touching the working tree or the stash list.
-// We pin it under refs/ccanvas/cp/<id> so git's gc never collects it, and keep a
+// We pin it under the fork's checkpoint ref prefix so git's gc never collects it, and keep a
 // little metadata (label, time, branch) in localStorage keyed by the folder.
 //
 // Limitation worth knowing: `stash create` captures tracked files only, so a
@@ -12,6 +12,7 @@
 // deliberately non-destructive, it only resets tracked content).
 
 import { runCommand } from './backend'
+import { CHECKPOINT_REF_PREFIX, storageKey } from './fork'
 
 export type Checkpoint = {
   id: string
@@ -24,7 +25,7 @@ export type Checkpoint = {
   ts: number
 }
 
-const KEY = 'ccanvas:checkpoints:v1'
+const KEY = storageKey('checkpoints:v1')
 
 type Store = Record<string, Checkpoint[]>
 
@@ -94,7 +95,7 @@ export async function createCheckpoint(
   }
 
   // pin the object so gc keeps it
-  const ref = await git(dir, ['update-ref', `refs/ccanvas/cp/${id}`, sha])
+  const ref = await git(dir, ['update-ref', `${CHECKPOINT_REF_PREFIX}/${id}`, sha])
   if (!ref || ref.code !== 0)
     return { ok: false, error: (ref?.stderr || 'could not pin checkpoint').slice(0, 200) }
 
@@ -126,7 +127,7 @@ export async function diffStatSince(dir: string, cp: Checkpoint): Promise<string
 }
 
 export async function deleteCheckpoint(dir: string, cp: Checkpoint) {
-  await git(dir, ['update-ref', '-d', `refs/ccanvas/cp/${cp.id}`])
+  await git(dir, ['update-ref', '-d', `${CHECKPOINT_REF_PREFIX}/${cp.id}`])
   setCheckpoints(
     dir,
     listCheckpoints(dir).filter((c) => c.id !== cp.id),

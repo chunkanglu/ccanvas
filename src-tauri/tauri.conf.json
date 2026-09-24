@@ -1,18 +1,18 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "ccanvas",
+  "productName": "ccanvas Pi",
   "version": "0.5.1",
-  "identifier": "dev.ccanvas.app",
+  "identifier": "io.github.chunkanglu.ccanvas-pi",
   "build": {
     "frontendDist": "../dist",
-    "devUrl": "http://127.0.0.1:5173",
+    "devUrl": "http://127.0.0.1:5174",
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build"
   },
   "app": {
     "windows": [
       {
-        "title": "ccanvas",
+        "title": "ccanvas Pi",
         "width": 1280,
         "height": 820,
         "minWidth": 720,

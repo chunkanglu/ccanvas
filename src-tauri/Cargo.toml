@@ -1,10 +1,10 @@
 [package]
 name = "app"
 version = "0.5.1"
-description = "A Tauri App"
+description = "ccanvas Pi — personal Pi-first fork of ccanvas"
 authors = ["you"]
 license = ""
-repository = ""
+repository = "https://github.com/chunkanglu/ccanvas"
 edition = "2021"
 rust-version = "1.77.2"
 

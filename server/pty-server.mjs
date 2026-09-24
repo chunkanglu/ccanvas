@@ -3,7 +3,7 @@
 //
 // Start with:  npm run server   (or `npm start` for server + web)
 //
-// Provides, all on ws/http://127.0.0.1:7531:
+// Provides, all on the loopback port in fork.config.json:
 //   • WebSocket  — a real shell per terminal widget (node-pty)
 //   • GET  /health      — liveness probe
 //   • GET  /default-dir — the user's home directory
@@ -23,7 +23,9 @@ import nodePath from 'node:path'
 import { promises as fs, createReadStream } from 'node:fs'
 import { execFile, spawn } from 'node:child_process'
 
-const PORT = 7531
+// Shared with the frontend; do not fall back to upstream's live backend.
+const fork = JSON.parse(await fs.readFile(new URL('../fork.config.json', import.meta.url), 'utf8'))
+const PORT = fork.backendPort
 const HOST = '127.0.0.1'
 
 let pty
@@ -697,7 +699,7 @@ wss.on('connection', (socket, req) => {
 })
 
 server.listen(PORT, HOST, () => {
-  console.log('\x1b[38;2;217;120;90m✦ ccanvas backend\x1b[0m')
+  console.log('\x1b[38;2;217;120;90m✦ ccanvas Pi backend\x1b[0m')
   console.log(`  listening  ws + http://${HOST}:${PORT}`)
   console.log(`  shell      ${defaultShell}`)
   console.log(`  home       ${homeDir}`)
