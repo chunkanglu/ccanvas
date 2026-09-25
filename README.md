@@ -2,8 +2,9 @@
 
 Personal fork of [DevoidSloth/ccanvas](https://github.com/DevoidSloth/ccanvas),
 maintained at [chunkanglu/ccanvas](https://github.com/chunkanglu/ccanvas).
-**Phases 0–1 are complete. Phase 2's native managed Pi TUI is available as an
-explicit test option; Claude remains the new-agent default until parity gates pass.**
+**Phases 0–2 are accepted and merged. Phase 3's native-TUI-compatible composer,
+live settings, and branch-aware transcript are in progress; Claude remains the
+new-agent default until parity gates pass.**
 
 - App identity: **ccanvas Pi**, `io.github.chunkanglu.ccanvas-pi`.
 - Development UI: `127.0.0.1:5174`; preview: `127.0.0.1:4174`; optional local
@@ -19,6 +20,7 @@ explicit test option; Claude remains the new-agent default until parity gates pa
 - [Phase 0 evidence and acceptance](docs/pi-integration-status.md) ·
   [Phase 1 schema/controller](docs/phase1-schema.md) ·
   [Phase 2 runtime status](docs/phase2-runtime.md) ·
+  [Phase 3 native agent UX](docs/phase3-agent-ux.md) ·
   [Installed-extension compatibility findings](docs/pi-compatibility.md) ·
   [Approved TUI direction and probe](docs/pi-tui-probe.md).
 - Fork releases are manual `pi-v*` draft prereleases; upstream `v*` tags do not

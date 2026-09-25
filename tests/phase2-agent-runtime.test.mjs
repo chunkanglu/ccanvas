@@ -22,11 +22,12 @@ test('runtime agent identity scopes duplicate canvas widgets by workspace', () =
 })
 
 test('Pi semantic prompt and rename do not inject native TUI bytes and surface failures', async () => {
-  const raw = [], prompts = [], names = []
+  const raw = [], prompts = [], drafts = [], names = []
   const id = 'workspace:semantic-pi'
   const owner = agents.registerTransport(id, {
     send: value => raw.push(value),
     prompt: value => prompts.push(value),
+    insertDraft: value => drafts.push(value),
     rename: value => names.push(value),
     kind: 'agent',
     title: 'Pi',
@@ -36,9 +37,17 @@ test('Pi semantic prompt and rename do not inject native TUI bytes and surface f
   assert.deepEqual(prompts, ['run safely'])
   assert.deepEqual(names, ['new name'])
   assert.deepEqual(raw, [])
+  assert.equal(agents.sendPrompt(id, 'editable draft', false), true)
+  assert.deepEqual(drafts, ['editable draft'])
+  assert.deepEqual(raw, [])
+  agents.unregisterTransport(id, owner)
+
+  const terminalOwner = agents.registerTransport(id, {
+    send: value => raw.push(value), kind: 'agent', title: 'terminal-backed',
+  })
   assert.equal(agents.sendPrompt(id, 'editable paste', false), true)
   assert.deepEqual(raw, ['editable paste'])
-  agents.unregisterTransport(id, owner)
+  agents.unregisterTransport(id, terminalOwner)
 
   const errors = []
   const originalError = console.error
@@ -54,7 +63,11 @@ test('Pi semantic prompt and rename do not inject native TUI bytes and surface f
     await Promise.resolve()
     await Promise.resolve()
     assert.ok(errors.some(message => message.includes('synthetic rejection')))
+    assert.deepEqual(await agents.deliverPrompt(id, 'retain me'), {
+      id, status: 'rejected', error: 'synthetic rejection',
+    })
     agents.unregisterTransport(id, rejectingOwner)
+    assert.deepEqual(await agents.deliverPrompt(id, 'offline'), { id, status: 'offline' })
   } finally {
     console.error = originalError
   }

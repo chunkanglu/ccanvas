@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { WidgetElement } from '../lib/types'
 import { useStore, selectActive } from '../store/workspace'
-import { transcriptPathFor, parseTranscript, type TranscriptTurn } from '../lib/transcript'
+import {
+  transcriptPathFor,
+  parsePiTranscript,
+  parseTranscript,
+  type PiTranscript,
+  type TranscriptTurn,
+} from '../lib/transcript'
 import { readFile, watchPath, baseName } from '../lib/backend'
 import { IconReload } from '../ui/icons'
 import '../styles/agent-tools.css'
@@ -33,8 +39,12 @@ export function TranscriptBody({ el }: { el: WidgetElement }) {
   )
   const cwd = agent?.cwd ?? el.cwd
   const sessionId = agent?.sessionId
+  const sessionFile = agent?.sessionFile
+  const sessionLeafId = agent?.sessionLeafId
+  const isPi = agent?.harness === 'pi'
 
   const [turns, setTurns] = useState<TranscriptTurn[]>([])
+  const [piMeta, setPiMeta] = useState<Omit<PiTranscript, 'turns'>>()
   const [path, setPath] = useState<string | null>(null)
   const [offline, setOffline] = useState(false)
   const [q, setQ] = useState('')
@@ -44,13 +54,20 @@ export function TranscriptBody({ el }: { el: WidgetElement }) {
   // resolve the transcript path whenever the bound session changes
   useEffect(() => {
     let alive = true
+    setPath(null)
+    setTurns([])
+    setPiMeta(undefined)
+    if (isPi) {
+      setPath(sessionFile ?? null)
+      return () => { alive = false }
+    }
     void transcriptPathFor(cwd, sessionId).then((p) => {
       if (alive) setPath(p)
     })
     return () => {
       alive = false
     }
-  }, [cwd, sessionId])
+  }, [cwd, isPi, sessionFile, sessionId])
 
   const reload = useMemo(
     () => async () => {
@@ -61,9 +78,20 @@ export function TranscriptBody({ el }: { el: WidgetElement }) {
         return
       }
       setOffline(false)
-      setTurns(parseTranscript(content))
+      if (isPi) {
+        const parsed = parsePiTranscript(content, sessionLeafId)
+        setTurns(parsed.turns)
+        setPiMeta({
+          activeEntries: parsed.activeEntries,
+          parsedEntries: parsed.parsedEntries,
+          truncated: parsed.truncated,
+        })
+      } else {
+        setTurns(parseTranscript(content))
+        setPiMeta(undefined)
+      }
     },
-    [path],
+    [isPi, path, sessionLeafId],
   )
 
   // initial load + live refresh on transcript writes
@@ -124,7 +152,12 @@ export function TranscriptBody({ el }: { el: WidgetElement }) {
             if (e.key === 'Escape') setQ('')
           }}
         />
-        <span className="tx__count">{turns.length} msgs</span>
+        <span
+          className="tx__count"
+          title={piMeta ? `${piMeta.activeEntries} active-path entries of ${piMeta.parsedEntries} parsed` : undefined}
+        >
+          {turns.length} msgs{isPi ? ` · active branch${piMeta?.truncated ? ' · bounded' : ''}` : ''}
+        </span>
         <button
           className={`tx__btn${autoscroll ? ' tx__btn--on' : ''}`}
           title="Stick to newest"
@@ -156,7 +189,13 @@ export function TranscriptBody({ el }: { el: WidgetElement }) {
         ) : (
           filtered.map((m, i) => (
             <div key={i} className={`tx__msg tx__msg--${m.role}`}>
-              <div className="tx__role">{m.role === 'user' ? 'you' : baseName(agent?.title ?? 'agent')}</div>
+              <div className="tx__role">
+                {m.role === 'user'
+                  ? 'you'
+                  : m.role === 'summary'
+                    ? 'context'
+                    : baseName(agent?.title ?? 'agent')}
+              </div>
               {m.text && <div className="tx__text">{m.text}</div>}
               {m.tools.length > 0 && (
                 <div className="tx__tools">

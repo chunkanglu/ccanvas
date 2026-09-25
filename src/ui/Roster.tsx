@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useStore } from '../store/workspace'
-import { agentRuntimeId, useAgents, sendPrompt } from '../lib/agents'
+import { agentRuntimeId, deliverPrompt, useAgents } from '../lib/agents'
 import type { WidgetElement, Workspace } from '../lib/types'
 import { IconClose, IconBroadcast, IconTrack } from './icons'
 import '../styles/agent-tools.css'
@@ -33,6 +33,9 @@ export function Roster() {
   const lastLine = useAgents((s) => s.lastLine)
 
   const [text, setText] = useState('')
+  const [sending, setSending] = useState(false)
+  const [deliveryStatus, setDeliveryStatus] = useState<string>()
+  const [retryIds, setRetryIds] = useState<string[]>()
   const [target, setTarget] = useState<string | null>(null) // agent id, or null = all
 
   const rows = useMemo<Row[]>(() => {
@@ -57,15 +60,35 @@ export function Roster() {
     setActiveWidget(row.agent.id)
     bringToFront([row.agent.id])
     setTarget(rowRuntimeId(row))
+    setRetryIds(undefined)
   }
 
-  const send = () => {
+  const send = async () => {
     const body = text.trim()
-    if (!body) return
-    const ids = target ? [target] : rows.map(rowRuntimeId)
-    let delivered = 0
-    for (const id of ids) if (sendPrompt(id, body)) delivered++
-    if (delivered) setText('')
+    if (!body || sending) return
+    const ids = retryIds ?? (target ? [target] : rows.map(rowRuntimeId))
+    if (!ids.length) return
+    setSending(true)
+    setDeliveryStatus('sending…')
+    try {
+      const results = await Promise.all(ids.map(id => deliverPrompt(id, body)))
+      const accepted = results.filter(result => result.status === 'accepted')
+      const failed = results.filter(result => result.status !== 'accepted')
+      if (!failed.length) {
+        setText('')
+        setRetryIds(undefined)
+        setDeliveryStatus(`${accepted.length}/${results.length} accepted`)
+      } else {
+        const detail = failed.map(result => {
+          const row = rows.find(candidate => rowRuntimeId(candidate) === result.id)
+          return `${row?.agent.title ?? result.id}: ${result.error ?? result.status}`
+        }).join(' · ')
+        setRetryIds(failed.map(result => result.id))
+        setDeliveryStatus(`${accepted.length}/${results.length} accepted · retry: ${detail}`)
+      }
+    } finally {
+      setSending(false)
+    }
   }
 
   const targetRow = target ? rows.find((row) => rowRuntimeId(row) === target) : undefined
@@ -135,28 +158,41 @@ export function Roster() {
         <button
           className="composer__target"
           title="Toggle between the focused agent and broadcasting to all"
-          onClick={() => setTarget(null)}
+          onClick={() => {
+            setTarget(null)
+            setRetryIds(undefined)
+          }}
         >
           {target ? '→ ' : <IconBroadcast size={14} />}
-          <span className="composer__target-name">{targetLabel}</span>
+          <span className="composer__target-name">
+            {retryIds ? `${retryIds.length} failed target${retryIds.length === 1 ? '' : 's'}` : targetLabel}
+          </span>
         </button>
         <textarea
           className="composer__input"
           placeholder={target ? 'Message this agent…' : 'Broadcast to all agents…'}
           value={text}
           spellCheck={false}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            setText(e.target.value)
+            setDeliveryStatus(undefined)
+          }}
           onPointerDown={(e) => e.stopPropagation()}
           onKeyDown={(e) => {
             e.stopPropagation()
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault()
-              send()
+              void send()
             }
           }}
         />
-        <button className="composer__send" disabled={!text.trim()} onClick={send}>
-          Send
+        {deliveryStatus && <span className="composer__result" title={deliveryStatus}>{deliveryStatus}</span>}
+        <button
+          className="composer__send"
+          disabled={!text.trim() || sending}
+          onClick={() => { void send() }}
+        >
+          {sending ? 'Sending…' : 'Send'}
         </button>
       </div>
     </div>

@@ -67,6 +67,9 @@ test('semantic prompt follows up whenever a Pi run is active or waiting', () => 
   assert.deepEqual(runtimeModule.managedPiPromptControl('new', false), {
     type: 'prompt', text: 'new',
   })
+  assert.deepEqual(runtimeModule.managedPiPromptControl('redirect', true, 'steer'), {
+    type: 'prompt', text: 'redirect', deliverAs: 'steer',
+  })
 })
 
 test('Tauri bundle maps the complete companion import closure', () => {

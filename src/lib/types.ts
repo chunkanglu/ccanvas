@@ -191,6 +191,8 @@ export type WidgetElement = Base & {
   sessionId?: string
   /** Exact Pi session JSONL path. Distinct from sessionId and widget identity. */
   sessionFile?: string
+  /** Current Pi session-tree leaf used by branch-aware read-only views. */
+  sessionLeafId?: string
   /** set true after Claude has been launched once for this agent's session,
    *  so subsequent opens use `claude --resume <sessionId>` */
   agentStarted?: boolean
@@ -200,6 +202,10 @@ export type WidgetElement = Base & {
   model?: string // Claude alias or Pi model id; interpreted by the harness
   thinkingLevel?: AgentThinkingLevel
   toolProfile?: string
+  /** Reviewable Pi composer state. Unsent text is portable canvas data. */
+  promptDraft?: string
+  /** Preferred delivery while a Pi run is active. */
+  promptDelivery?: 'steer' | 'followUp'
   agentPrompt?: string // initial prompt typed after launch
   /** Claude-only legacy permission switch. Never translate this into Pi trust/approval. */
   skipPermissions?: boolean // pass --dangerously-skip-permissions

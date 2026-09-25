@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { WidgetElement } from '../lib/types'
 import { runCommand, watchPath, readFile, resolvePath } from '../lib/backend'
+import { beginCanvasFileDrag, consumeCanvasFileDragClick } from '../lib/canvas-file-drag'
 import { IconReload } from '../ui/icons'
 import '../styles/git-panel.css'
 
@@ -462,14 +463,14 @@ export function DiffBody({ el }: { el: WidgetElement }) {
                     <div
                       key={f.path}
                       className={`ghd__file${sel === f.path ? ' ghd__file--sel' : ''}`}
-                      onClick={() => setSel(f.path)}
-                      draggable
+                      onClick={() => {
+                        if (consumeCanvasFileDragClick()) return
+                        setSel(f.path)
+                      }}
                       title={`${f.path}\n(drag onto an agent to add as @context)`}
-                      onDragStart={(e) => {
-                        const abs = resolvePath(cwd, f.path)
-                        e.dataTransfer.setData('application/x-ccanvas-file', abs)
-                        e.dataTransfer.setData('text/plain', abs)
-                        e.dataTransfer.effectAllowed = 'copy'
+                      onPointerDown={(event) => {
+                        if ((event.target as HTMLElement).closest('input')) return
+                        beginCanvasFileDrag(event, resolvePath(cwd, f.path))
                       }}
                     >
                       <input

@@ -21,6 +21,10 @@ export type CompanionWelcome = RuntimeIdentity & {
   replayFrom: number
 }
 
+export type PiCompanionModel = { provider: string; id: string; name?: string }
+export type PiCompanionTool = { name: string; description?: string; active: boolean }
+export type PiCompanionThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+
 export type CompanionEventPayload =
   | {
       type: 'session'
@@ -28,6 +32,7 @@ export type CompanionEventPayload =
       reason?: string
       sessionId?: string
       sessionFile?: string
+      leafId?: string
       name?: string
       model?: { provider: string; id: string }
       thinkingLevel?: string
@@ -49,6 +54,13 @@ export type CompanionEventPayload =
       isError?: boolean
       truncated?: boolean
     }
+  | { type: 'queue'; pending: boolean }
+  | {
+      type: 'catalog'
+      models: PiCompanionModel[]
+      thinkingLevels: PiCompanionThinkingLevel[]
+      tools: PiCompanionTool[]
+    }
   | { type: 'runtime_error'; code: string; message: string }
 
 export type CompanionEvent = RuntimeIdentity & {
@@ -62,6 +74,13 @@ export type CompanionControlPayload =
   | { type: 'prompt'; text: string; deliverAs?: 'steer' | 'followUp' }
   | { type: 'abort' }
   | { type: 'rename'; name: string }
+  | {
+      type: 'configure'
+      model?: { provider: string; id: string }
+      thinkingLevel?: PiCompanionThinkingLevel
+      activeTools?: string[]
+      tool?: { name: string; active: boolean }
+    }
   | { type: 'shutdown' }
 
 export type CompanionControl = RuntimeIdentity & {
@@ -113,6 +132,9 @@ const text = (value: unknown, max = 8192): value is string =>
   && !/[\u0000-\u0008\u000b-\u001f\u007f]/.test(value)
 const integer = (value: unknown, min = 0): value is number =>
   Number.isSafeInteger(value) && (value as number) >= min
+const THINKING_LEVELS: PiCompanionThinkingLevel[] = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+const thinkingLevel = (value: unknown): value is PiCompanionThinkingLevel =>
+  THINKING_LEVELS.includes(value as PiCompanionThinkingLevel)
 
 function assertRuntime(value: Record<string, unknown>): void {
   if (!text(value.widgetId, 256)) throw new Error('Invalid companion widget id')
@@ -124,7 +146,7 @@ function assertEvent(value: unknown): asserts value is CompanionEventPayload {
   switch (value.type) {
     case 'session':
       if (!['start', 'info', 'shutdown'].includes(String(value.phase))) throw new Error('Invalid session event')
-      for (const key of ['reason', 'sessionId', 'name', 'thinkingLevel']) {
+      for (const key of ['reason', 'sessionId', 'leafId', 'name', 'thinkingLevel']) {
         if (value[key] !== undefined && !text(value[key], 1024)) throw new Error(`Invalid session ${key}`)
       }
       if (value.sessionFile !== undefined && !text(value.sessionFile, 8192)) throw new Error('Invalid session file')
@@ -153,6 +175,30 @@ function assertEvent(value: unknown): asserts value is CompanionEventPayload {
       if (value.isError !== undefined && typeof value.isError !== 'boolean') throw new Error('Invalid tool error state')
       if (value.truncated !== undefined && typeof value.truncated !== 'boolean') throw new Error('Invalid tool truncation state')
       return
+    case 'queue':
+      if (typeof value.pending !== 'boolean') throw new Error('Invalid companion queue event')
+      return
+    case 'catalog': {
+      if (!Array.isArray(value.models) || value.models.length > 512
+        || !Array.isArray(value.thinkingLevels) || value.thinkingLevels.length > THINKING_LEVELS.length
+        || !Array.isArray(value.tools) || value.tools.length > 512) {
+        throw new Error('Invalid companion catalog')
+      }
+      for (const model of value.models) {
+        if (!object(model) || !text(model.provider, 256) || !text(model.id, 1024)
+          || (model.name !== undefined && !text(model.name, 1024))) {
+          throw new Error('Invalid catalog model')
+        }
+      }
+      if (!value.thinkingLevels.every(thinkingLevel)) throw new Error('Invalid catalog thinking levels')
+      for (const tool of value.tools) {
+        if (!object(tool) || !text(tool.name, 512) || typeof tool.active !== 'boolean'
+          || (tool.description !== undefined && !text(tool.description, 2048))) {
+          throw new Error('Invalid catalog tool')
+        }
+      }
+      return
+    }
     case 'runtime_error':
       if (!text(value.code, 256) || !text(value.message, 8192)) throw new Error('Invalid runtime error')
       return
@@ -172,6 +218,28 @@ function assertControl(value: unknown): asserts value is CompanionControlPayload
     case 'rename':
       if (!text(value.name, 1024)) throw new Error('Invalid rename control')
       return
+    case 'configure': {
+      const hasModel = value.model !== undefined
+      const hasThinking = value.thinkingLevel !== undefined
+      const hasTools = value.activeTools !== undefined
+      const hasToolToggle = value.tool !== undefined
+      if (!hasModel && !hasThinking && !hasTools && !hasToolToggle) throw new Error('Empty configure control')
+      if (hasTools && hasToolToggle) throw new Error('Configure control cannot combine a tool set and toggle')
+      if (hasModel && (!object(value.model) || !text(value.model.provider, 256) || !text(value.model.id, 1024))) {
+        throw new Error('Invalid configure model')
+      }
+      if (hasThinking && !thinkingLevel(value.thinkingLevel)) throw new Error('Invalid configure thinking level')
+      if (hasTools && (!Array.isArray(value.activeTools) || value.activeTools.length > 512
+        || !value.activeTools.every(tool => text(tool, 512))
+        || new Set(value.activeTools).size !== value.activeTools.length)) {
+        throw new Error('Invalid configure tools')
+      }
+      if (hasToolToggle && (!object(value.tool) || !text(value.tool.name, 512)
+        || typeof value.tool.active !== 'boolean')) {
+        throw new Error('Invalid configure tool toggle')
+      }
+      return
+    }
     case 'abort':
     case 'shutdown':
       return

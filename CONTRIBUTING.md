@@ -42,6 +42,7 @@ npm run server   # the optional fork PTY/file backend on 127.0.0.1:7532
 npm run test:stage0 # fork isolation and schema-migration checks; no Pi/model calls
 npm run test:phase1 # controller identity/generation checks; no Pi/model calls
 npm run test:phase2 # companion protocol/extension unit tests; no Pi/model calls
+npm run test:phase3 # Pi composer/settings state tests; no Pi/model calls
 npm run build      # type-check + bundle the web app into dist/
 npm run test:app-install # installer/build-wrapper tests; no real Applications writes
 npm run probe:terminal # optional POSIX/zsh line-editing regression; no model calls

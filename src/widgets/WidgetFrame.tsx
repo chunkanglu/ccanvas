@@ -29,6 +29,7 @@ import {
   IconInfo,
 } from '../ui/icons'
 import { agentRuntimeId, useAgents, sendTo, sendPrompt, renameSession, isLive as isSessionLive, type AgentMetrics } from '../lib/agents'
+import { CANVAS_FILE_DROP_EVENT } from '../lib/canvas-file-drag'
 import { NoteBody } from './NoteBody'
 import { WebBody } from './WebBody'
 import { TerminalBody } from './TerminalBody'
@@ -133,8 +134,10 @@ export function WidgetFrame({
     : null
 
   const [renaming, setRenaming] = useState(false)
+  const [dropActive, setDropActive] = useState(false)
   const [name, setName] = useState(el.title)
   const titleRef = useRef<HTMLInputElement>(null)
+  const dropBodyRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => setName(el.title), [el.title])
   useEffect(() => {
@@ -178,36 +181,64 @@ export function WidgetFrame({
     if (tool === 'select') e.stopPropagation()
   }
 
-  // drop onto an agent/terminal to feed it context: a file (dragged from a
-  // file-tree or diff widget) becomes an @-mention; a prompt (from the prompt
-  // library) is pasted in as text. Both ride the same native DnD channel.
+  // Drop onto an agent/terminal to feed it context. File-tree and diff rows
+  // use app-local pointer tracking because WKWebView does not reliably start
+  // HTML DnD inside the transformed canvas; prompt rows retain native DnD.
   const onBodyDragOver = (e: React.DragEvent) => {
-    const t = e.dataTransfer.types
-    if (
-      t.includes('application/x-ccanvas-file') ||
-      t.includes('application/x-ccanvas-prompt')
-    ) {
-      e.preventDefault()
-      e.dataTransfer.dropEffect = 'copy'
-    }
-  }
-  const onBodyDrop = (e: React.DragEvent) => {
-    const path = e.dataTransfer.getData('application/x-ccanvas-file')
-    const prompt = e.dataTransfer.getData('application/x-ccanvas-prompt')
-    if (!path && !prompt) return
+    // WebKit can hide custom MIME types during drag-over. Accept the drag here
+    // and classify its payload on drop, using text/plain as the fallback.
     e.preventDefault()
-    e.stopPropagation()
-    if (path) {
-      const base = el.cwd ? el.cwd.replace(/[\\/]+$/, '') : ''
-      let rel = base && path.startsWith(base) ? path.slice(base.length + 1) : path
-      rel = rel.replace(/\\/g, '/')
-      sendTo(sessionId, `@${rel} `)
+    e.dataTransfer.dropEffect = 'copy'
+    setDropActive(true)
+  }
+  const onBodyDragLeave = (e: React.DragEvent) => {
+    const next = e.relatedTarget
+    if (next instanceof Node && e.currentTarget.contains(next)) return
+    setDropActive(false)
+  }
+  const insertDroppedPath = (path: string) => {
+    const base = el.cwd ? el.cwd.replace(/[\\/]+$/, '') : ''
+    let rel = base && path.startsWith(base) ? path.slice(base.length + 1) : path
+    rel = rel.replace(/\\/g, '/')
+    if (el.kind === 'agent' && el.harness === 'pi') {
+      sendPrompt(sessionId, `Please read and use this file:\n${path}\n`, false)
     } else {
-      // paste the snippet without auto-submitting, so it can be reviewed/edited
-      sendPrompt(sessionId, prompt, false)
+      sendTo(sessionId, `@${rel} `)
     }
     select()
     setActiveWidget(el.id)
+  }
+
+  useEffect(() => {
+    const body = dropBodyRef.current
+    if (!body || !isTerminal) return
+    const receivePointerDrop = (event: Event) => {
+      const path = (event as CustomEvent<{ path?: unknown }>).detail?.path
+      if (typeof path !== 'string' || !path || path.length > 32_768) return
+      insertDroppedPath(path)
+    }
+    body.addEventListener(CANVAS_FILE_DROP_EVENT, receivePointerDrop)
+    return () => body.removeEventListener(CANVAS_FILE_DROP_EVENT, receivePointerDrop)
+  })
+
+  const onBodyDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setDropActive(false)
+    const explicitPath = e.dataTransfer.getData('application/x-ccanvas-file')
+    const explicitPrompt = e.dataTransfer.getData('application/x-ccanvas-prompt')
+    const plain = e.dataTransfer.getData('text/plain')
+    const fallbackPath = /^(?:\/|[A-Za-z]:[\\/])/.test(plain) ? plain : ''
+    const path = explicitPath || fallbackPath
+    const prompt = explicitPrompt || (!path ? plain : '')
+    if (!path && !prompt) return
+    if (path) insertDroppedPath(path)
+    else {
+      // paste the snippet without auto-submitting, so it can be reviewed/edited
+      sendPrompt(sessionId, prompt, false)
+      select()
+      setActiveWidget(el.id)
+    }
   }
 
   const commitName = () => {
@@ -373,7 +404,9 @@ export function WidgetFrame({
       </div>
 
       <div
-        className="widget__body"
+        ref={dropBodyRef}
+        data-ccanvas-file-drop-target={isTerminal ? 'true' : undefined}
+        className={`widget__body${dropActive ? ' widget__body--drop-active' : ''}`}
         style={
           isLive || isNote
             ? { pointerEvents: tool === 'select' ? 'auto' : 'none' }
@@ -381,8 +414,9 @@ export function WidgetFrame({
         }
         onPointerDownCapture={isLive ? onLiveBodyCapture : undefined}
         onPointerDown={isLive ? onLiveBodyDown : undefined}
-        onDragOver={isTerminal ? onBodyDragOver : undefined}
-        onDrop={isTerminal ? onBodyDrop : undefined}
+        onDragOverCapture={isTerminal ? onBodyDragOver : undefined}
+        onDragLeaveCapture={isTerminal ? onBodyDragLeave : undefined}
+        onDropCapture={isTerminal ? onBodyDrop : undefined}
       >
         <WidgetErrorBoundary>
           {el.kind === 'note' && <NoteBody el={el} active={active} />}

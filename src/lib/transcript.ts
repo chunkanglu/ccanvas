@@ -166,9 +166,19 @@ export function extractToolFiles(
 
 export type TranscriptTool = { name: string; target?: string }
 export type TranscriptTurn = {
-  role: 'user' | 'assistant'
+  role: 'user' | 'assistant' | 'summary'
   text: string
   tools: TranscriptTool[]
+}
+
+export type PiTranscript = {
+  turns: TranscriptTurn[]
+  /** Entries on the current leaf-to-root path, including metadata entries. */
+  activeEntries: number
+  /** Valid tree entries retained by the bounded parser. */
+  parsedEntries: number
+  /** True when input/tree/render bounds omitted older material. */
+  truncated: boolean
 }
 
 /** Parse a transcript into an ordered list of readable user/assistant turns. */
@@ -209,4 +219,154 @@ export function parseTranscript(jsonl: string): TranscriptTurn[] {
     }
   }
   return out
+}
+
+// ---------- Pi active-branch conversation ----------
+
+type PiContent = {
+  type?: string
+  text?: string
+  name?: string
+  arguments?: unknown
+}
+type PiMessage = {
+  role?: string
+  content?: unknown
+  command?: string
+  output?: string
+}
+type PiEntry = {
+  type?: string
+  id?: string
+  parentId?: string | null
+  message?: PiMessage
+  summary?: string
+  customType?: string
+  content?: unknown
+  display?: boolean
+  tokensBefore?: number
+}
+
+const PI_MAX_PARSED_ENTRIES = 20_000
+const PI_MAX_RENDERED_TURNS = 2_000
+const PI_MAX_TURN_CHARS = 64 * 1024
+
+function boundedText(value: string): string {
+  return value.length > PI_MAX_TURN_CHARS
+    ? `${value.slice(0, PI_MAX_TURN_CHARS)}\n…[truncated]`
+    : value
+}
+
+function piText(content: unknown): string {
+  if (typeof content === 'string') return boundedText(content.trim())
+  if (!Array.isArray(content)) return ''
+  return boundedText(content
+    .filter((part): part is PiContent & { text: string } => (
+      !!part && typeof part === 'object' && part.type === 'text' && typeof part.text === 'string'
+    ))
+    .map(part => part.text)
+    .join('\n')
+    .trim())
+}
+
+/**
+ * Parse only Pi's current branch: the last valid entry is the active leaf and
+ * parent links are followed to the root. Abandoned siblings are never merged.
+ * Compaction retainedTail is deliberately not materialized, avoiding duplicate
+ * display alongside the persisted branch messages.
+ */
+export function parsePiTranscript(jsonl: string, leafId?: string): PiTranscript {
+  const complete = completeLines(jsonl)
+  const boundedLines = complete.slice(-PI_MAX_PARSED_ENTRIES)
+  const byId = new Map<string, PiEntry>()
+  let leaf: PiEntry | undefined
+  for (const raw of boundedLines) {
+    let entry: PiEntry
+    try {
+      entry = JSON.parse(raw) as PiEntry
+    } catch {
+      continue
+    }
+    if (!entry || typeof entry !== 'object' || entry.type === 'session'
+      || typeof entry.id !== 'string' || !entry.id) continue
+    if (entry.parentId !== null && entry.parentId !== undefined && typeof entry.parentId !== 'string') continue
+    byId.set(entry.id, entry)
+    leaf = entry
+  }
+
+  const reversePath: PiEntry[] = []
+  const visited = new Set<string>()
+  let cursor = leafId ? byId.get(leafId) : leaf
+  let missingParent = !!leafId && !cursor
+  if (!cursor) cursor = leaf
+  let cycleDetected = false
+  while (cursor?.id && !visited.has(cursor.id) && reversePath.length <= PI_MAX_PARSED_ENTRIES) {
+    visited.add(cursor.id)
+    reversePath.push(cursor)
+    if (cursor.parentId == null) break
+    const parent = byId.get(cursor.parentId)
+    if (!parent) {
+      missingParent = true
+      break
+    }
+    cursor = parent
+  }
+  if (cursor?.id && cursor.parentId != null && visited.has(cursor.id) && !missingParent) {
+    cycleDetected = true
+  }
+  const path = reversePath.reverse()
+  const turns: TranscriptTurn[] = []
+  for (const entry of path) {
+    if (entry.type === 'message' && entry.message) {
+      const message = entry.message
+      if (message.role === 'user') {
+        const text = piText(message.content)
+        if (text) turns.push({ role: 'user', text, tools: [] })
+      } else if (message.role === 'assistant') {
+        const tools: TranscriptTool[] = []
+        if (Array.isArray(message.content)) {
+          for (const part of message.content as PiContent[]) {
+            if (!part || part.type !== 'toolCall') continue
+            tools.push({
+              name: typeof part.name === 'string' && part.name ? part.name : 'tool',
+              target: toolTarget(part.name, part.arguments),
+            })
+          }
+        }
+        const text = piText(message.content)
+        if (text || tools.length) turns.push({ role: 'assistant', text, tools })
+      } else if (message.role === 'bashExecution') {
+        const command = typeof message.command === 'string' ? message.command : ''
+        const output = typeof message.output === 'string' ? message.output : ''
+        turns.push({
+          role: 'summary',
+          text: boundedText(output.trim()),
+          tools: command ? [{ name: 'bash', target: command }] : [],
+        })
+      }
+    } else if (entry.type === 'compaction' && typeof entry.summary === 'string') {
+      turns.push({
+        role: 'summary',
+        text: boundedText(entry.summary.trim()),
+        tools: [{ name: 'compaction', target: entry.tokensBefore ? `${entry.tokensBefore} tokens` : undefined }],
+      })
+    } else if (entry.type === 'branch_summary' && typeof entry.summary === 'string') {
+      turns.push({ role: 'summary', text: boundedText(entry.summary.trim()), tools: [{ name: 'branch summary' }] })
+    } else if (entry.type === 'custom_message' && entry.display !== false) {
+      const text = piText(entry.content)
+      if (text) turns.push({
+        role: 'summary',
+        text,
+        tools: [{ name: entry.customType ? `extension · ${entry.customType}` : 'extension' }],
+      })
+    }
+  }
+
+  const renderTruncated = turns.length > PI_MAX_RENDERED_TURNS
+  return {
+    turns: renderTruncated ? turns.slice(-PI_MAX_RENDERED_TURNS) : turns,
+    activeEntries: path.length,
+    parsedEntries: byId.size,
+    truncated: complete.length > boundedLines.length || missingParent || cycleDetected || renderTruncated,
+  }
 }

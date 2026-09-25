@@ -793,6 +793,21 @@ textarea {
   position: relative;
   background: var(--bg);
 }
+.widget__body--drop-active::after {
+  content: 'Drop into draft';
+  position: absolute;
+  inset: 4px;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  border: 2px dashed var(--accent);
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--bg) 80%, transparent);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  pointer-events: none;
+}
 
 /* bottom-right resize grip */
 .widget__resize {
@@ -2066,6 +2081,152 @@ textarea {
   width: 100%;
   height: 100%;
 }
+.pi-composer {
+  border-top: 1px solid var(--line-soft);
+  background: #111318;
+  padding: 6px 8px;
+}
+.pi-composer__input {
+  display: block;
+  width: 100%;
+  min-height: 38px;
+  max-height: 110px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  outline: none;
+  padding: 6px 8px;
+  background: #090a0d;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.4;
+  user-select: text;
+}
+.pi-composer__input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-soft);
+}
+.pi-composer__bar {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  margin-top: 5px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+}
+.pi-composer__delivery {
+  display: flex;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+}
+.pi-composer__delivery button,
+.pi-composer__abort,
+.pi-composer__send {
+  border: 0;
+  padding: 3px 7px;
+  background: var(--panel-hi);
+  color: var(--ink-dim);
+  font: inherit;
+}
+.pi-composer__delivery button + button { border-left: 1px solid var(--line); }
+.pi-composer__delivery button:hover,
+.pi-composer__abort:hover,
+.pi-composer__send:hover { color: var(--ink); }
+.pi-composer__delivery button.is-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.pi-composer__abort {
+  border: 1px solid rgba(232, 121, 90, 0.35);
+  border-radius: var(--r-sm);
+  color: #e8795a;
+}
+.pi-composer__result {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-faint);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pi-composer__result.is-error { color: #e8795a; }
+.pi-composer__send {
+  border-radius: var(--r-sm);
+  background: var(--accent);
+  color: #171319;
+  font-weight: 600;
+}
+.pi-composer__send:disabled,
+.pi-composer__abort:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+.pi-settings {
+  border-top: 1px solid var(--line-soft);
+  background: #0e1014;
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 9px;
+}
+.pi-settings > summary {
+  padding: 4px 9px;
+  cursor: pointer;
+  list-style-position: inside;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pi-settings[open] > summary { color: var(--ink-dim); }
+.pi-settings__grid {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(85px, 1fr);
+  gap: 6px;
+  padding: 2px 9px 6px;
+}
+.pi-settings__grid label { min-width: 0; }
+.pi-settings__grid label > span {
+  display: block;
+  margin-bottom: 2px;
+}
+.pi-settings select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: #090a0d;
+  color: var(--ink-dim);
+  font: inherit;
+  padding: 3px 5px;
+}
+.pi-settings__tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 9px;
+  max-height: 70px;
+  margin: 0 9px 5px;
+  padding: 4px 6px 5px;
+  overflow: auto;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+}
+.pi-settings__tools legend { padding: 0 3px; }
+.pi-settings__tools label {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--ink-dim);
+}
+.pi-settings__tools input { accent-color: var(--accent); }
+.pi-settings__note {
+  padding: 0 9px 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pi-settings__note.is-error { color: #e8795a; }
 .term__status {
   display: flex;
   align-items: center;
@@ -3141,6 +3302,15 @@ textarea {
 }
 .selbar__bc-input:focus {
   border-color: var(--k-web);
+}
+.selbar__bc-status {
+  max-width: 150px;
+  overflow: hidden;
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---- arrow flow (orchestration logic) editor ---- */

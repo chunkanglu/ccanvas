@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useStore, selectActive } from '../store/workspace'
-import { agentRuntimeId, sendPrompt, isLive } from '../lib/agents'
+import { agentRuntimeId, deliverPrompt, sendPrompt, isLive } from '../lib/agents'
 import type { ArrowElement, ArrowFlow, CanvasElement, FlowCondition, WidgetElement } from '../lib/types'
 import {
   IconCopy,
@@ -47,6 +47,9 @@ export function SelectionBar() {
   const setFlowsEnabled = useStore((s) => s.setFlowsEnabled)
 
   const [bc, setBc] = useState('')
+  const [bcSending, setBcSending] = useState(false)
+  const [bcStatus, setBcStatus] = useState<string>()
+  const [bcRetryIds, setBcRetryIds] = useState<string[]>()
 
   if (selection.length === 0) return null
 
@@ -82,10 +85,31 @@ export function SelectionBar() {
     .map((e) => agentRuntimeId(ws.id, e))
     .filter(isLive)
 
-  const sendBroadcast = (submit: boolean) => {
-    if (!liveTargets.length) return
-    for (const id of liveTargets) sendPrompt(id, bc, submit)
-    if (submit) setBc('')
+  const sendBroadcast = async (submit: boolean) => {
+    if (!liveTargets.length || !bc.trim() || bcSending) return
+    if (!submit) {
+      for (const id of liveTargets) sendPrompt(id, bc, false)
+      setBcStatus(`draft inserted in ${liveTargets.length}`)
+      return
+    }
+    const retryTargets = bcRetryIds?.filter(id => liveTargets.includes(id))
+    const ids = retryTargets?.length ? retryTargets : liveTargets
+    setBcSending(true)
+    setBcStatus('sending…')
+    try {
+      const results = await Promise.all(ids.map(id => deliverPrompt(id, bc)))
+      const failed = results.filter(result => result.status !== 'accepted')
+      if (!failed.length) {
+        setBc('')
+        setBcRetryIds(undefined)
+        setBcStatus(`${results.length}/${results.length} accepted`)
+      } else {
+        setBcRetryIds(failed.map(result => result.id))
+        setBcStatus(`${results.length - failed.length}/${results.length} accepted · ${failed.length} retry`)
+      }
+    } finally {
+      setBcSending(false)
+    }
   }
 
   return (
@@ -313,17 +337,31 @@ export function SelectionBar() {
             placeholder={`broadcast to ${liveTargets.length} sessions…`}
             value={bc}
             spellCheck={false}
-            onChange={(e) => setBc(e.target.value)}
+            onChange={(e) => {
+              setBc(e.target.value)
+              setBcStatus(undefined)
+            }}
             onKeyDown={(e) => {
               e.stopPropagation()
-              if (e.key === 'Enter') sendBroadcast(true)
+              if (e.key === 'Enter') void sendBroadcast(true)
             }}
           />
-          <button className="selbar__btn" title="Send (no newline)" onClick={() => sendBroadcast(false)}>
-            type
+          {bcStatus && <span className="selbar__bc-status" title={bcStatus}>{bcStatus}</span>}
+          <button
+            className="selbar__btn"
+            title="Insert editable draft"
+            disabled={!bc.trim() || bcSending}
+            onClick={() => { void sendBroadcast(false) }}
+          >
+            draft
           </button>
-          <button className="selbar__btn selbar__btn--accent" title="Send + Enter" onClick={() => sendBroadcast(true)}>
-            ⏎
+          <button
+            className="selbar__btn selbar__btn--accent"
+            title="Submit to selected sessions"
+            disabled={!bc.trim() || bcSending}
+            onClick={() => { void sendBroadcast(true) }}
+          >
+            {bcSending ? '…' : '⏎'}
           </button>
         </div>
       )}

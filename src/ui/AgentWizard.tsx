@@ -39,7 +39,11 @@ function Wizard({ ctx }: { ctx: AgentWizardCtx }) {
   const [model, setModel] = useState(existing?.model ?? ctx.model ?? (harness === 'claude' ? 'default' : ''))
   const [thinking, setThinking] = useState<ThinkingChoice>(existing?.thinkingLevel ?? 'default')
   const [skip, setSkip] = useState(existing?.skipPermissions ?? false)
-  const [prompt, setPrompt] = useState(existing?.agentPrompt ?? ctx.agentPrompt ?? '')
+  const [prompt, setPrompt] = useState(
+    (existing?.harness === 'pi' ? existing.promptDraft : existing?.agentPrompt)
+      ?? ctx.agentPrompt
+      ?? '',
+  )
 
   const folder = ctx.worktree
     ? `worktree · ${ctx.worktree}`
@@ -61,6 +65,7 @@ function Wizard({ ctx }: { ctx: AgentWizardCtx }) {
           a.thinkingLevel = thinking === 'default' ? undefined : thinking
           a.skipPermissions = false
           a.agentPrompt = undefined
+          a.promptDraft = prompt || undefined
         } else {
           a.provider = undefined
           a.thinkingLevel = undefined
@@ -83,6 +88,7 @@ function Wizard({ ctx }: { ctx: AgentWizardCtx }) {
         thinkingLevel: harness === 'pi' && thinking !== 'default' ? thinking : undefined,
         skipPermissions: harness === 'claude' ? skip : false,
         agentPrompt: harness === 'claude' ? prompt.trim() || undefined : undefined,
+        promptDraft: harness === 'pi' ? prompt || undefined : undefined,
         ...(ctx.cwd ? { cwd: ctx.cwd } : {}),
         ...(ctx.worktree ? { worktree: ctx.worktree } : {}),
       })
@@ -216,7 +222,15 @@ function Wizard({ ctx }: { ctx: AgentWizardCtx }) {
                 </button>
               ))}
             </div>
-            {editing && <span className="wiz__hint">Recreate the agent to change runtime settings.</span>}
+            {editing && <span className="wiz__hint">Use the agent's live settings panel, or recreate it to change launch defaults.</span>}
+            <label className="wiz__label">Initial draft (optional)</label>
+            <textarea
+              className="wiz__textarea"
+              placeholder="Review and send this from the Pi composer"
+              value={prompt}
+              spellCheck={false}
+              onChange={(e) => setPrompt(e.target.value)}
+            />
           </>
         )}
 

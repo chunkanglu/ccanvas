@@ -127,11 +127,10 @@ OS-level limit, not something this local capability can defeat.
 
 ## What is NOT done
 
-No web runtime manager or Windows capability generator/job-object ownership. Basic
-native in-app launch/input/extension-overlay behavior and exact app-restart resume
-were accepted before the independent review; the hardened post-review build still
-needs installation after the running app is quit and targeted live checks for forced
-reconnect overflow, delete/undo, semantic prompting over an active overlay, and tree
-cleanup. The CI suite verifies the resource mapping/import closure, while a CI-produced
-platform bundle smoke job remains a pre-release follow-up. Phase 3's richer settings
-and composer are not implemented. Claude remains default. No release has been made.
+No web runtime manager or Windows capability generator/job-object ownership. The
+hardened post-review bundle was installed and its managed Pi workflow accepted after
+PR #1 merged; forced reconnect overflow, delete/undo, semantic prompting over an active
+overlay, and tree cleanup remain targeted soak cases rather than release claims. The CI
+suite verifies the resource mapping/import closure, while a CI-produced platform bundle
+smoke job remains a pre-release follow-up. Phase 3's richer settings and composer are
+specified in `docs/phase3-agent-ux.md`. Claude remains default. No release has been made.
