@@ -42,6 +42,8 @@ type ProcessRuntime = {
   results: Map<string, ControlRecord>
   sessionSnapshot?: CompanionEventPayload
   lifecycleSnapshot?: CompanionEventPayload
+  catalogSnapshot?: CompanionEventPayload
+  queueSnapshot?: CompanionEventPayload
   reconnectAttempt: number
   reconnectTimer?: ReturnType<typeof setTimeout>
   stopping: boolean
@@ -233,7 +235,12 @@ function connect(runtime: ProcessRuntime): void {
           for (const entry of runtime.replay) if (entry.seq >= frame.replayFrom) write(runtime, entry.encoded)
           // Report a gap after retained replay so sequence order stays monotonic.
           if (replayGap) {
-            const snapshots = [runtime.sessionSnapshot, runtime.lifecycleSnapshot].filter(
+            const snapshots = [
+              runtime.sessionSnapshot,
+              runtime.catalogSnapshot,
+              runtime.lifecycleSnapshot,
+              runtime.queueSnapshot,
+            ].filter(
               (event): event is CompanionEventPayload => event !== undefined,
             )
             emit(runtime, { type: 'runtime_error', code: 'replay_gap', message: `Replay starts at ${first}, host requested ${frame.replayFrom}` })
@@ -302,6 +309,8 @@ function emit(runtime: ProcessRuntime, event: CompanionEventPayload): void {
     try { encoded = encodePiCompanionFrame(frame(payload)) } catch { return }
   }
   if (payload.type === 'session') runtime.sessionSnapshot = payload
+  if (payload.type === 'catalog') runtime.catalogSnapshot = payload
+  if (payload.type === 'queue') runtime.queueSnapshot = payload
   if (payload.type === 'lifecycle' && (payload.phase === 'agent_start' || payload.phase === 'agent_settled')) {
     runtime.lifecycleSnapshot = payload
   }
@@ -332,9 +341,45 @@ function sessionEvent(ctx: ExtensionContext, phase: 'start' | 'info' | 'shutdown
     type: 'session', phase, reason,
     sessionId: ctx.sessionManager.getSessionId(),
     sessionFile: ctx.sessionManager.getSessionFile(),
+    leafId: ctx.sessionManager.getLeafId() ?? undefined,
     name: ctx.sessionManager.getSessionName(),
     model,
     thinkingLevel: ctx.thinkingLevel,
+  }
+}
+
+function queueEvent(ctx: ExtensionContext): CompanionEventPayload {
+  return { type: 'queue', pending: ctx.hasPendingMessages() }
+}
+
+function catalogEvent(pi: ExtensionAPI, ctx: ExtensionContext): CompanionEventPayload {
+  const seenModels = new Set<string>()
+  const models = ctx.scopedModels.flatMap(({ model }) => {
+    const key = `${model.provider}\u0000${model.id}`
+    if (seenModels.has(key)) return []
+    seenModels.add(key)
+    return [{
+      provider: truncateUtf8(model.provider, 256),
+      id: truncateUtf8(model.id, 1024),
+      ...(model.name ? { name: truncateUtf8(model.name, 1024) } : {}),
+    }]
+  }).slice(0, 64)
+  const active = new Set(pi.getActiveTools())
+  const seenTools = new Set<string>()
+  const tools = pi.getAllTools().flatMap(tool => {
+    if (seenTools.has(tool.name)) return []
+    seenTools.add(tool.name)
+    return [{
+      name: truncateUtf8(tool.name, 256),
+      ...(tool.description ? { description: truncateUtf8(tool.description, 512) } : {}),
+      active: active.has(tool.name),
+    }]
+  }).slice(0, 128)
+  return {
+    type: 'catalog',
+    models,
+    thinkingLevels: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+    tools,
   }
 }
 
@@ -359,10 +404,43 @@ export default function companion(pi: ExtensionAPI): void {
     switch (frame.control.type) {
       case 'prompt':
         pi.sendUserMessage(frame.control.text, frame.control.deliverAs ? { deliverAs: frame.control.deliverAs } : undefined)
+        if (ctx) emit(runtime, queueEvent(ctx))
         return
       case 'rename':
         pi.setSessionName(frame.control.name)
         return
+      case 'configure': {
+        if (!ctx) throw new Error('Pi extension context is not ready')
+        if (!ctx.isIdle()) throw new Error('Pi settings can only change while the agent is idle')
+        const selectedModel = frame.control.model
+          ? ctx.scopedModels.find(({ model }) => (
+              model.provider === frame.control.model!.provider && model.id === frame.control.model!.id
+            ))?.model
+          : undefined
+        if (frame.control.model && !selectedModel) throw new Error('Requested model is not available in this Pi session')
+        const availableTools = new Set(pi.getAllTools().map(tool => tool.name))
+        if (frame.control.activeTools) {
+          const unknown = frame.control.activeTools.find(tool => !availableTools.has(tool))
+          if (unknown) throw new Error(`Requested tool is not available: ${unknown}`)
+        }
+        if (frame.control.tool && !availableTools.has(frame.control.tool.name)) {
+          throw new Error(`Requested tool is not available: ${frame.control.tool.name}`)
+        }
+        if (selectedModel && !(await pi.setModel(selectedModel))) {
+          throw new Error('Requested model is unavailable or has no credentials')
+        }
+        if (frame.control.thinkingLevel) pi.setThinkingLevel(frame.control.thinkingLevel)
+        if (frame.control.activeTools) pi.setActiveTools(frame.control.activeTools)
+        if (frame.control.tool) {
+          const activeTools = new Set(pi.getActiveTools())
+          if (frame.control.tool.active) activeTools.add(frame.control.tool.name)
+          else activeTools.delete(frame.control.tool.name)
+          pi.setActiveTools([...activeTools])
+        }
+        emit(runtime, sessionEvent(ctx, 'info'))
+        emit(runtime, catalogEvent(pi, ctx))
+        return
+      }
       case 'abort':
         if (!ctx) throw new Error('Pi extension context is not ready')
         ctx.abort()
@@ -379,18 +457,26 @@ export default function companion(pi: ExtensionAPI): void {
   pi.on('session_start', (event, next) => {
     remember(next)
     emit(runtime, sessionEvent(next, 'start', event.reason))
+    emit(runtime, catalogEvent(pi, next))
+    emit(runtime, queueEvent(next))
   })
   pi.on('session_info_changed', (_event, next) => {
+    remember(next)
+    emit(runtime, sessionEvent(next, 'info'))
+  })
+  pi.on('session_tree', (_event, next) => {
     remember(next)
     emit(runtime, sessionEvent(next, 'info'))
   })
   pi.on('model_select', (_event, next) => {
     remember(next)
     emit(runtime, sessionEvent(next, 'info'))
+    emit(runtime, catalogEvent(pi, next))
   })
   pi.on('thinking_level_select', (_event, next) => {
     remember(next)
     emit(runtime, sessionEvent(next, 'info'))
+    emit(runtime, catalogEvent(pi, next))
   })
   pi.on('before_agent_start', (_event, next) => {
     remember(next)
@@ -399,6 +485,7 @@ export default function companion(pi: ExtensionAPI): void {
   pi.on('agent_start', (_event, next) => {
     remember(next)
     emit(runtime, { type: 'lifecycle', phase: 'agent_start' })
+    emit(runtime, queueEvent(next))
   })
   pi.on('agent_end', (event, next) => {
     remember(next)
@@ -411,6 +498,9 @@ export default function companion(pi: ExtensionAPI): void {
       type: 'lifecycle', phase: 'agent_settled',
       outcome: settledOutcome === 'unknown' ? 'completed' : settledOutcome,
     })
+    emit(runtime, sessionEvent(next, 'info'))
+    emit(runtime, catalogEvent(pi, next))
+    emit(runtime, queueEvent(next))
   })
   pi.on('turn_start', (event, next) => {
     remember(next)

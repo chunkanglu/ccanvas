@@ -94,6 +94,8 @@ type Live = {
   title: string
   /** Semantic operations avoid typing into an unrelated native Pi overlay. */
   prompt?: (text: string) => void | Promise<void>
+  /** Host-owned editable draft; used instead of typing into the native TUI. */
+  insertDraft?: (text: string) => void
   rename?: (name: string) => void | Promise<void>
 }
 type OwnedLive = Live & { owner: symbol }
@@ -130,16 +132,51 @@ export function sendTo(id: string, data: string): boolean {
   return true
 }
 
+export type AgentDeliveryResult = {
+  id: string
+  status: 'accepted' | 'offline' | 'rejected'
+  error?: string
+}
+
+/**
+ * Await semantic acknowledgement for roster/direct delivery. PTY-backed agents
+ * can only acknowledge a local write; Pi resolves after its companion result.
+ */
+export async function deliverPrompt(id: string, text: string): Promise<AgentDeliveryResult> {
+  const body = text.replace(/\r/g, '').replace(/\n+$/, '')
+  const transport = transports.get(id)
+  if (!transport) return { id, status: 'offline' }
+  try {
+    if (transport.prompt) await transport.prompt(body)
+    else {
+      const wrapped = body.includes('\n') ? `\x1b[200~${body}\x1b[201~` : body
+      transport.send(`${wrapped}\r`)
+    }
+    return { id, status: 'accepted' }
+  } catch (error) {
+    return {
+      id,
+      status: 'rejected',
+      error: error instanceof Error ? error.message : String(error),
+    }
+  }
+}
+
 /**
  * Deliver a prompt to a live agent/terminal. Multi-line text is wrapped in a
  * bracketed-paste sequence so Claude's TUI ingests every line as one block
  * (a bare \n would submit the first line early). `submit` appends Enter.
- * Returns false if the session isn't connected.
+ * Returns false if the session isn't connected. Call `deliverPrompt` when the
+ * caller must retain text until semantic acknowledgement.
  */
 export function sendPrompt(id: string, text: string, submit = true): boolean {
   const body = text.replace(/\r/g, '').replace(/\n+$/, '')
   const transport = transports.get(id)
   if (!transport) return false
+  if (!submit && transport.insertDraft) {
+    transport.insertDraft(body)
+    return true
+  }
   if (submit && transport.prompt) {
     void Promise.resolve(transport.prompt(body)).catch((error) => {
       const message = error instanceof Error ? error.message : String(error)

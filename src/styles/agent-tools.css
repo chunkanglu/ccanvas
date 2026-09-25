@@ -218,6 +218,15 @@
 .composer__input:focus {
   border-color: var(--accent-line);
 }
+.composer__result {
+  overflow: hidden;
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .composer__send {
   align-self: flex-end;
   height: 28px;
@@ -619,6 +628,15 @@
 }
 .tx__msg--assistant .tx__role {
   color: #b9a8e0;
+}
+.tx__msg--summary .tx__role {
+  color: var(--ink-faint);
+}
+.tx__msg--summary .tx__text {
+  padding: 6px 8px;
+  border-left: 2px solid var(--line-hard);
+  color: var(--ink-dim);
+  background: var(--panel);
 }
 .tx__text {
   font-size: 12px;

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { WidgetElement, WidgetKind } from '../lib/types'
 import { useStore } from '../store/workspace'
 import { widgetKindForFile, VIDEO_EXTENSIONS } from '../lib/filetypes'
+import { beginCanvasFileDrag, consumeCanvasFileDragClick } from '../lib/canvas-file-drag'
 import {
   listDir,
   revealPath,
@@ -144,12 +145,7 @@ function signature(cache: Cache): string {
 
 function dragProps(path: string) {
   return {
-    draggable: true,
-    onDragStart: (e: React.DragEvent) => {
-      e.dataTransfer.setData('application/x-ccanvas-file', path)
-      e.dataTransfer.setData('text/plain', path)
-      e.dataTransfer.effectAllowed = 'copy' as const
-    },
+    onPointerDown: (event: React.PointerEvent) => beginCanvasFileDrag(event, path),
   }
 }
 
@@ -173,7 +169,11 @@ function TreeRow({
     <div
       className="ftree__row"
       style={{ paddingLeft: 8 + depth * 14 }}
-      onClick={() => (entry.is_dir ? onToggle(entry.path) : onOpenFile(entry.path))}
+      onClick={() => {
+        if (consumeCanvasFileDragClick()) return
+        if (entry.is_dir) onToggle(entry.path)
+        else onOpenFile(entry.path)
+      }}
       onContextMenu={(e) => onMenu(e, entry)}
       title={`${entry.path}\n(drag onto an agent to add as @context)`}
       {...dragProps(entry.path)}
@@ -212,7 +212,11 @@ function ResultRow({
   return (
     <div
       className="ftree__row ftree__result"
-      onClick={() => (entry.is_dir ? onRevealDir(entry.path) : onOpenFile(entry.path))}
+      onClick={() => {
+        if (consumeCanvasFileDragClick()) return
+        if (entry.is_dir) onRevealDir(entry.path)
+        else onOpenFile(entry.path)
+      }}
       onContextMenu={(e) => onMenu(e, entry)}
       title={entry.path}
       {...dragProps(entry.path)}

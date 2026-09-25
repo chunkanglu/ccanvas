@@ -4,7 +4,7 @@
 //! arrives independently over a per-process, capability-authenticated loopback
 //! socket owned by this backend. Tokens are never emitted to the webview/logs.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, Shutdown, TcpListener, TcpStream};
@@ -47,6 +47,8 @@ struct CompanionState {
     last_seq: Option<u64>,
     session_snapshot: Option<Value>,
     lifecycle_snapshot: Option<Value>,
+    catalog_snapshot: Option<Value>,
+    queue_snapshot: Option<Value>,
     recovering: bool,
 }
 
@@ -122,6 +124,18 @@ pub struct PiOpenResult {
 }
 
 #[derive(Deserialize)]
+pub struct PiModelSelection {
+    provider: String,
+    id: String,
+}
+
+#[derive(Deserialize)]
+pub struct PiToolToggle {
+    name: String,
+    active: bool,
+}
+
+#[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PiControl {
     Prompt {
@@ -132,6 +146,14 @@ pub enum PiControl {
     Abort,
     Rename {
         name: String,
+    },
+    Configure {
+        model: Option<PiModelSelection>,
+        #[serde(rename = "thinkingLevel")]
+        thinking_level: Option<String>,
+        #[serde(rename = "activeTools")]
+        active_tools: Option<Vec<String>>,
+        tool: Option<PiToolToggle>,
     },
     Shutdown,
 }
@@ -613,7 +635,7 @@ fn validate_event_payload(event: &Value) -> Result<(), String> {
             if !matches!(
                 event.get("phase").and_then(Value::as_str),
                 Some("start" | "info" | "shutdown")
-            ) || !["reason", "sessionId", "name", "thinkingLevel"]
+            ) || !["reason", "sessionId", "leafId", "name", "thinkingLevel"]
                 .iter()
                 .all(|key| optional_text(event, key, 1024))
                 || !optional_text(event, "sessionFile", 8192)
@@ -678,6 +700,61 @@ fn validate_event_payload(event: &Value) -> Result<(), String> {
                 || !optional_bool(event, "truncated")
             {
                 return Err("Invalid companion tool event".into());
+            }
+        }
+        "queue" => {
+            if event.get("pending").and_then(Value::as_bool).is_none() {
+                return Err("Invalid companion queue event".into());
+            }
+        }
+        "catalog" => {
+            let models = event
+                .get("models")
+                .and_then(Value::as_array)
+                .filter(|models| models.len() <= 512)
+                .ok_or("Invalid companion catalog models")?;
+            if models.iter().any(|model| {
+                !model.is_object()
+                    || !model
+                        .get("provider")
+                        .and_then(Value::as_str)
+                        .is_some_and(|value| valid_text(value, 256))
+                    || !model
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .is_some_and(|value| valid_text(value, 1024))
+                    || !optional_text(model, "name", 1024)
+            }) {
+                return Err("Invalid companion catalog model".into());
+            }
+            let thinking_levels = event
+                .get("thinkingLevels")
+                .and_then(Value::as_array)
+                .filter(|levels| levels.len() <= 7)
+                .ok_or("Invalid companion catalog thinking levels")?;
+            if thinking_levels.iter().any(|level| {
+                !matches!(
+                    level.as_str(),
+                    Some("off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max")
+                )
+            }) {
+                return Err("Invalid companion catalog thinking level".into());
+            }
+            let tools = event
+                .get("tools")
+                .and_then(Value::as_array)
+                .filter(|tools| tools.len() <= 512)
+                .ok_or("Invalid companion catalog tools")?;
+            if tools.iter().any(|tool| {
+                !tool.is_object()
+                    || !tool
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .is_some_and(|value| valid_text(value, 512))
+                    || !optional_text(tool, "description", 2048)
+                    || tool.get("active").and_then(Value::as_bool).is_none()
+            }) {
+                return Err("Invalid companion catalog tool".into());
             }
         }
         "runtime_error" => {
@@ -850,6 +927,8 @@ fn process_frame(
                     event.get("phase").and_then(Value::as_str),
                 ) {
                     (Some("session"), _) => state.session_snapshot = Some(frame.clone()),
+                    (Some("catalog"), _) => state.catalog_snapshot = Some(frame.clone()),
+                    (Some("queue"), _) => state.queue_snapshot = Some(frame.clone()),
                     (Some("lifecycle"), Some("agent_start" | "agent_settled")) => {
                         state.lifecycle_snapshot = Some(frame.clone());
                     }
@@ -1299,7 +1378,9 @@ pub fn pi_start(
     // but replaying them to the UI would duplicate metrics and notifications.
     let mut snapshots = [
         companion.session_snapshot.clone(),
+        companion.catalog_snapshot.clone(),
         companion.lifecycle_snapshot.clone(),
+        companion.queue_snapshot.clone(),
     ]
     .into_iter()
     .flatten()
@@ -1397,6 +1478,79 @@ pub fn pi_detach(
     }
 }
 
+fn control_payload(control: PiControl) -> Result<Value, String> {
+    Ok(match control {
+        PiControl::Prompt { text, deliver_as } => {
+            if !valid_text(&text, MAX_FRAME_BYTES / 2)
+                || deliver_as
+                    .as_deref()
+                    .is_some_and(|value| !matches!(value, "steer" | "followUp"))
+            {
+                return Err("Invalid Pi prompt control".into());
+            }
+            let mut value = json!({ "type": "prompt", "text": text });
+            if let Some(deliver_as) = deliver_as {
+                value["deliverAs"] = Value::String(deliver_as);
+            }
+            value
+        }
+        PiControl::Abort => json!({ "type": "abort" }),
+        PiControl::Rename { name } => {
+            if !valid_text(&name, 1024) {
+                return Err("Invalid Pi rename control".into());
+            }
+            json!({ "type": "rename", "name": name })
+        }
+        PiControl::Configure {
+            model,
+            thinking_level,
+            active_tools,
+            tool,
+        } => {
+            if model.is_none()
+                && thinking_level.is_none()
+                && active_tools.is_none()
+                && tool.is_none()
+            {
+                return Err("Empty Pi configure control".into());
+            }
+            if model.as_ref().is_some_and(|model| {
+                !valid_text(&model.provider, 256) || !valid_text(&model.id, 1024)
+            }) || thinking_level.as_deref().is_some_and(|level| {
+                !matches!(
+                    level,
+                    "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+                )
+            }) || active_tools.as_ref().is_some_and(|tools| {
+                tools.len() > 512
+                    || tools.iter().any(|tool| !valid_text(tool, 512))
+                    || tools.iter().collect::<HashSet<_>>().len() != tools.len()
+            }) || tool
+                .as_ref()
+                .is_some_and(|tool| !valid_text(&tool.name, 512))
+                || (active_tools.is_some() && tool.is_some())
+            {
+                return Err("Invalid Pi configure control".into());
+            }
+            let mut value = json!({ "type": "configure" });
+            if let Some(model) = model {
+                value["model"] = json!({ "provider": model.provider, "id": model.id });
+            }
+            if let Some(thinking_level) = thinking_level {
+                value["thinkingLevel"] = Value::String(thinking_level);
+            }
+            if let Some(active_tools) = active_tools {
+                value["activeTools"] = json!(active_tools);
+            }
+            if let Some(tool) = tool {
+                value["tool"] = json!({ "name": tool.name, "active": tool.active });
+            }
+            value
+        }
+        PiControl::Shutdown => json!({ "type": "shutdown" }),
+    })
+}
+
 #[tauri::command]
 pub fn pi_control(
     state: State<'_, PiRuntimeManager>,
@@ -1409,26 +1563,7 @@ pub fn pi_control(
     if !valid_identifier(&request_id, 256) {
         return Err("Invalid Pi control request id".into());
     }
-    let control = match control {
-        PiControl::Prompt { text, deliver_as } => {
-            if !valid_text(&text, MAX_FRAME_BYTES / 2)
-                || deliver_as
-                    .as_deref()
-                    .is_some_and(|value| !matches!(value, "steer" | "followUp"))
-            {
-                return Err("Invalid Pi prompt control".into());
-            }
-            json!({ "type": "prompt", "text": text, "deliverAs": deliver_as })
-        }
-        PiControl::Abort => json!({ "type": "abort" }),
-        PiControl::Rename { name } => {
-            if !valid_text(&name, 1024) {
-                return Err("Invalid Pi rename control".into());
-            }
-            json!({ "type": "rename", "name": name })
-        }
-        PiControl::Shutdown => json!({ "type": "shutdown" }),
-    };
+    let control = control_payload(control)?;
     let (widget_id, companion) = {
         let inner = state
             .inner
@@ -1575,6 +1710,39 @@ mod tests {
     }
 
     #[test]
+    fn semantic_controls_omit_nulls_and_validate_live_settings() {
+        let idle_prompt = control_payload(PiControl::Prompt {
+            text: "hello".into(),
+            deliver_as: None,
+        })
+        .unwrap();
+        assert_eq!(idle_prompt, json!({ "type": "prompt", "text": "hello" }));
+
+        let configure = control_payload(PiControl::Configure {
+            model: Some(PiModelSelection {
+                provider: "synthetic".into(),
+                id: "model".into(),
+            }),
+            thinking_level: Some("high".into()),
+            active_tools: Some(vec!["read".into(), "edit".into()]),
+            tool: None,
+        })
+        .unwrap();
+        assert_eq!(configure["type"], "configure");
+        assert_eq!(configure["model"]["provider"], "synthetic");
+        assert_eq!(configure["thinkingLevel"], "high");
+        assert_eq!(configure["activeTools"], json!(["read", "edit"]));
+
+        assert!(control_payload(PiControl::Configure {
+            model: None,
+            thinking_level: None,
+            active_tools: Some(vec!["read".into(), "read".into()]),
+            tool: None,
+        })
+        .is_err());
+    }
+
+    #[test]
     fn inherited_environment_is_rebuilt_without_parent_runtime_identity() {
         let mut command = CommandBuilder::new("pi");
         command.env("CMUX_WORKSPACE_ID", "leak");
@@ -1601,6 +1769,35 @@ mod tests {
             "event": { "type": "session", "phase": "start", "sessionId": "session" },
         });
         assert!(decode_host_frame(&serde_json::to_vec(&valid).unwrap(), "widget", 2).is_ok());
+
+        let queue = json!({
+            "v": 1, "type": "event", "widgetId": "widget", "generation": 2, "seq": 1,
+            "event": { "type": "queue", "pending": true },
+        });
+        assert!(decode_host_frame(&serde_json::to_vec(&queue).unwrap(), "widget", 2).is_ok());
+        let mut bad_queue = queue;
+        bad_queue["event"]["pending"] = Value::String("yes".into());
+        assert!(decode_host_frame(&serde_json::to_vec(&bad_queue).unwrap(), "widget", 2).is_err());
+
+        let catalog = json!({
+            "v": 1,
+            "type": "event",
+            "widgetId": "widget",
+            "generation": 2,
+            "seq": 1,
+            "event": {
+                "type": "catalog",
+                "models": [{ "provider": "synthetic", "id": "model", "name": "Model" }],
+                "thinkingLevels": ["off", "high"],
+                "tools": [{ "name": "read", "description": "Read files", "active": true }],
+            },
+        });
+        assert!(decode_host_frame(&serde_json::to_vec(&catalog).unwrap(), "widget", 2).is_ok());
+        let mut bad_catalog = catalog;
+        bad_catalog["event"]["thinkingLevels"] = json!(["extreme"]);
+        assert!(
+            decode_host_frame(&serde_json::to_vec(&bad_catalog).unwrap(), "widget", 2).is_err()
+        );
 
         let unicode_boundary = json!({
             "v": 1, "type": "event", "widgetId": "widget", "generation": 2, "seq": 1,

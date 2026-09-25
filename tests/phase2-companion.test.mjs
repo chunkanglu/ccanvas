@@ -65,10 +65,31 @@ test('companion authenticates, replays events, scopes controls and preserves nat
   const handlers = new Map()
   const prompts = []
   const names = []
+  let pendingMessages = false
+  const configured = { models: [], thinking: [], tools: [] }
+  let activeTools = ['read']
+  let selectedModel = { provider: 'synthetic-provider', id: 'synthetic-model', name: 'Synthetic' }
+  let selectedThinking = 'high'
+  const availableModels = [
+    selectedModel,
+    { provider: 'synthetic-provider', id: 'alternate-model', name: 'Alternate' },
+  ]
+  const allTools = [
+    { name: 'read', description: 'Read files' },
+    { name: 'edit', description: 'Edit files' },
+  ]
   const pi = {
     on: (name, handler) => handlers.set(name, handler),
-    sendUserMessage: (text, options) => prompts.push([text, options]),
+    sendUserMessage: (text, options) => {
+      prompts.push([text, options])
+      pendingMessages = options?.deliverAs === 'followUp'
+    },
     setSessionName: name => names.push(name),
+    getActiveTools: () => activeTools,
+    getAllTools: () => allTools,
+    setActiveTools: tools => { activeTools = tools; configured.tools.push(tools) },
+    setModel: async model => { selectedModel = model; configured.models.push(model.id); return true },
+    setThinkingLevel: level => { selectedThinking = level; configured.thinking.push(level) },
   }
   companion(pi)
   assert.equal(handlers.size, 0, 'extension must be inert without manager capability env')
@@ -85,13 +106,17 @@ test('companion authenticates, replays events, scopes controls and preserves nat
 
   const calls = { abort: 0, shutdown: 0 }
   const ctx = {
-    model: { provider: 'synthetic-provider', id: 'synthetic-model' },
-    thinkingLevel: 'high',
+    get model() { return selectedModel },
+    get thinkingLevel() { return selectedThinking },
+    scopedModels: availableModels.map(model => ({ model })),
+    isIdle: () => true,
+    hasPendingMessages: () => pendingMessages,
     abort: () => { calls.abort++ },
     shutdown: () => { calls.shutdown++ },
     sessionManager: {
       getSessionId: () => 'pi-session-id',
       getSessionFile: () => '/synthetic/session.jsonl',
+      getLeafId: () => 'leaf-1',
       getSessionName: () => 'managed test',
     },
   }
@@ -108,13 +133,21 @@ test('companion authenticates, replays events, scopes controls and preserves nat
   )
   assert.equal(session.event.sessionId, 'pi-session-id')
   assert.equal(session.event.sessionFile, '/synthetic/session.jsonl')
+  assert.equal(session.event.leafId, 'leaf-1')
   assert.equal(session.event.model.provider, 'synthetic-provider')
+  const catalog = await waitFor(
+    () => records.find(frame => frame.type === 'event' && frame.event.type === 'catalog'),
+    'model and tool catalog',
+  )
+  assert.deepEqual(catalog.event.models.map(model => model.id), ['synthetic-model', 'alternate-model'])
+  assert.deepEqual(catalog.event.tools.map(tool => [tool.name, tool.active]), [['read', true], ['edit', false]])
 
   const prompt = { ...runtime, type: 'control', requestId: 'prompt-1', control: { type: 'prompt', text: 'safe synthetic prompt', deliverAs: 'followUp' } }
   peer.write(line(prompt) + line(prompt))
   await waitFor(() => records.filter(frame => frame.type === 'result' && frame.requestId === 'prompt-1').length === 2, 'in-flight deduplicated results')
   assert.deepEqual(prompts, [['safe synthetic prompt', { deliverAs: 'followUp' }]])
   assert.equal(prompts.length, 1, 'simultaneous duplicate request ids must not execute twice')
+  assert.ok(records.some(frame => frame.type === 'event' && frame.event.type === 'queue' && frame.event.pending))
 
   peer.write(line({ ...prompt, control: { type: 'prompt', text: 'conflicting retry' } }))
   const conflicting = await waitFor(
@@ -124,6 +157,35 @@ test('companion authenticates, replays events, scopes controls and preserves nat
   assert.equal(conflicting.ok, false)
   assert.match(conflicting.error, /different control/)
   assert.equal(prompts.length, 1, 'conflicting request id must not execute')
+
+  peer.write(line({
+    ...runtime, type: 'control', requestId: 'configure-1',
+    control: {
+      type: 'configure',
+      model: { provider: 'synthetic-provider', id: 'alternate-model' },
+      thinkingLevel: 'medium',
+      activeTools: ['read', 'edit'],
+    },
+  }))
+  const configuredResult = await waitFor(
+    () => records.find(frame => frame.type === 'result' && frame.requestId === 'configure-1'),
+    'configure result',
+  )
+  assert.equal(configuredResult.ok, true)
+  assert.deepEqual(configured.models, ['alternate-model'])
+  assert.deepEqual(configured.thinking, ['medium'])
+  assert.deepEqual(configured.tools, [['read', 'edit']])
+
+  peer.write(line({
+    ...runtime, type: 'control', requestId: 'tool-toggle-1',
+    control: { type: 'configure', tool: { name: 'edit', active: false } },
+  }))
+  const toggleResult = await waitFor(
+    () => records.find(frame => frame.type === 'result' && frame.requestId === 'tool-toggle-1'),
+    'tool toggle result',
+  )
+  assert.equal(toggleResult.ok, true)
+  assert.deepEqual(configured.tools.at(-1), ['read'])
 
   const firstPeer = peer
   firstPeer.destroy()

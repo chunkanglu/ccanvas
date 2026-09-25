@@ -936,6 +936,7 @@ export const useStore = create<Store>((set, get) => ({
       // Pasted agents are new runtime identities, never aliases of the source.
       if (ne.type === 'widget' && ne.kind === 'agent') {
         delete ne.sessionFile
+        delete ne.sessionLeafId
         ne.sessionId = ne.harness === 'pi' ? undefined : crypto.randomUUID()
         ne.agentStarted = false
       }

@@ -62,8 +62,14 @@ type Bridge = {
   listen<T>(event: string, handler: (event: Event<T>) => void): Promise<UnlistenFn>
 }
 
-export function managedPiPromptControl(text: string, activeRun: boolean): CompanionControlPayload {
-  return { type: 'prompt', text, ...(activeRun ? { deliverAs: 'followUp' } : {}) }
+export type ManagedPiDelivery = 'steer' | 'followUp'
+
+export function managedPiPromptControl(
+  text: string,
+  activeRun: boolean,
+  delivery: ManagedPiDelivery = 'followUp',
+): CompanionControlPayload {
+  return { type: 'prompt', text, ...(activeRun ? { deliverAs: delivery } : {}) }
 }
 
 const nativeBridge: Bridge = { invoke, listen }

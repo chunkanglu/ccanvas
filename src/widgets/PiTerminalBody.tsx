@@ -1,12 +1,28 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import type { WidgetElement, AgentThinkingLevel } from '../lib/types'
-import { connectManagedPi, managedPiPromptControl, type ManagedPiRuntime } from '../lib/pi-runtime'
-import type { CompanionEvent } from '../lib/pi-companion-protocol'
+import {
+  connectManagedPi,
+  managedPiPromptControl,
+  type ManagedPiDelivery,
+  type ManagedPiRuntime,
+} from '../lib/pi-runtime'
+import type {
+  CompanionControlPayload,
+  CompanionEvent,
+  PiCompanionModel,
+  PiCompanionThinkingLevel,
+  PiCompanionTool,
+} from '../lib/pi-companion-protocol'
 import { registerTransport, unregisterTransport, useAgents, ensureNotifyPermission, looksLikePrompt, notify } from '../lib/agents'
 import { useStore, selectActive } from '../store/workspace'
 import { onAgentTurnComplete } from '../lib/flow'
+import {
+  appendPiDraft,
+  draftAfterAcknowledgement,
+  normalizedPiDraft,
+} from '../lib/pi-agent-ux'
 
 const BASE_FONT = 12.5
 
@@ -19,6 +35,7 @@ export function PiTerminalBody({ workspaceId, el, active, visible = true }: Prop
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
   const runtimeRef = useRef<ManagedPiRuntime | null>(null)
+  const draftRef = useRef(el.promptDraft ?? '')
   const workingSince = useRef<number | null>(null)
   const turnIndex = useRef(0)
   const turnText = useRef('')
@@ -27,6 +44,19 @@ export function PiTerminalBody({ workspaceId, el, active, visible = true }: Prop
   const kRef = useRef(1)
   const [connection, setConnection] = useState<'connecting' | 'connected' | 'warning' | 'error'>('connecting')
   const [error, setError] = useState<string>()
+  const [draft, setDraft] = useState(draftRef.current)
+  const [delivery, setDelivery] = useState<ManagedPiDelivery>(el.promptDelivery ?? 'followUp')
+  const [submitting, setSubmitting] = useState(false)
+  const [composerState, setComposerState] = useState<string>()
+  const [composerError, setComposerError] = useState<string>()
+  const [queuePending, setQueuePending] = useState(false)
+  const [catalog, setCatalog] = useState<{
+    models: PiCompanionModel[]
+    thinkingLevels: PiCompanionThinkingLevel[]
+    tools: PiCompanionTool[]
+  }>()
+  const [settingsBusy, setSettingsBusy] = useState(false)
+  const [settingsError, setSettingsError] = useState<string>()
   const [armed, setArmed] = useState(visible)
   const [k, setK] = useState(() => {
     const value = Math.max(1, selectActive(useStore.getState()).camera.zoom)
@@ -34,6 +64,23 @@ export function PiTerminalBody({ workspaceId, el, active, visible = true }: Prop
     return value
   })
   const mutateElementInTab = useStore(state => state.mutateElementInTab)
+  const agentStatus = useAgents(state => state.status[runtimeId] ?? 'off')
+
+  const persistDraft = useCallback((next: string) => {
+    if (next === draftRef.current) return
+    draftRef.current = next
+    setDraft(next)
+    mutateElementInTab(workspaceId, el.id, current => {
+      if (current.type !== 'widget' || current.kind !== 'agent' || current.harness !== 'pi') return
+      current.promptDraft = next || undefined
+    })
+  }, [el.id, mutateElementInTab, workspaceId])
+
+  const insertDraft = useCallback((text: string) => {
+    persistDraft(appendPiDraft(draftRef.current, text))
+    setComposerError(undefined)
+    setComposerState('draft inserted')
+  }, [persistDraft])
 
   useEffect(() => {
     if (visible) setArmed(true)
@@ -137,6 +184,7 @@ export function PiTerminalBody({ workspaceId, el, active, visible = true }: Prop
             text,
             ['working', 'waiting'].includes(useAgents.getState().status[runtimeId]),
           )).then(() => undefined),
+          insertDraft,
           rename: name => runtime.control({ type: 'rename', name }).then(() => undefined),
           kind: 'agent',
           title: el.title,
@@ -165,6 +213,21 @@ export function PiTerminalBody({ workspaceId, el, active, visible = true }: Prop
         }
         return
       }
+      if (event.type === 'queue') {
+        setQueuePending(event.pending)
+        if (!event.pending) {
+          setComposerState(current => current === 'queued' ? 'queue drained' : current)
+        }
+        return
+      }
+      if (event.type === 'catalog') {
+        setCatalog({
+          models: event.models,
+          thinkingLevels: event.thinkingLevels,
+          tools: event.tools,
+        })
+        return
+      }
       if (event.type === 'session') {
         if (event.phase === 'start' || event.phase === 'info') {
           const current = useStore.getState().tabs
@@ -175,6 +238,7 @@ export function PiTerminalBody({ workspaceId, el, active, visible = true }: Prop
             && current.harness === 'pi'
             && current.sessionId === event.sessionId
             && current.sessionFile === event.sessionFile
+            && current.sessionLeafId === event.leafId
             && (!event.model || (current.provider === event.model.provider && current.model === event.model.id))
             && (!event.thinkingLevel || current.thinkingLevel === event.thinkingLevel)
           if (unchanged) return
@@ -182,6 +246,7 @@ export function PiTerminalBody({ workspaceId, el, active, visible = true }: Prop
             if (current.type !== 'widget' || current.kind !== 'agent' || current.harness !== 'pi') return
             current.sessionId = event.sessionId
             current.sessionFile = event.sessionFile
+            current.sessionLeafId = event.leafId
             if (event.model) {
               current.provider = event.model.provider
               current.model = event.model.id
@@ -310,6 +375,71 @@ export function PiTerminalBody({ workspaceId, el, active, visible = true }: Prop
     }
   }
 
+  const activeRun = agentStatus === 'working' || agentStatus === 'waiting'
+  const setPreferredDelivery = (next: ManagedPiDelivery) => {
+    setDelivery(next)
+    mutateElementInTab(workspaceId, el.id, current => {
+      if (current.type !== 'widget' || current.kind !== 'agent' || current.harness !== 'pi') return
+      current.promptDelivery = next === 'followUp' ? undefined : next
+    })
+  }
+  const submitDraft = async () => {
+    const text = normalizedPiDraft(draft)
+    const runtime = runtimeRef.current
+    if (!text || !runtime || submitting) return
+    setSubmitting(true)
+    setComposerError(undefined)
+    setComposerState(activeRun
+      ? (delivery === 'steer' ? 'steering…' : 'queueing…')
+      : 'sending…')
+    try {
+      await runtime.control(managedPiPromptControl(text, activeRun, delivery))
+      persistDraft(draftAfterAcknowledgement(draftRef.current, draft))
+      setComposerState(activeRun
+        ? (delivery === 'steer' ? 'steered' : 'queued')
+        : 'accepted')
+    } catch (reason) {
+      setComposerError(reason instanceof Error ? reason.message : String(reason))
+      setComposerState(undefined)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+  const abortRun = async () => {
+    const runtime = runtimeRef.current
+    if (!runtime || submitting) return
+    setSubmitting(true)
+    setComposerError(undefined)
+    setComposerState('aborting…')
+    try {
+      await runtime.control({ type: 'abort' })
+      setComposerState('abort requested')
+    } catch (reason) {
+      setComposerError(reason instanceof Error ? reason.message : String(reason))
+      setComposerState(undefined)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+  const applyConfiguration = async (control: Extract<CompanionControlPayload, { type: 'configure' }>) => {
+    const runtime = runtimeRef.current
+    if (!runtime || settingsBusy || activeRun) return
+    setSettingsBusy(true)
+    setSettingsError(undefined)
+    try {
+      // The companion emits authoritative session/catalog snapshots before its
+      // result; those snapshots persist the actual (possibly clamped) values.
+      await runtime.control(control)
+    } catch (reason) {
+      setSettingsError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setSettingsBusy(false)
+    }
+  }
+  const currentModelKey = el.provider && el.model
+    ? JSON.stringify([el.provider, el.model])
+    : ''
+
   return (
     <div className="term" onContextMenu={onContextMenu}>
       <div ref={hostRef} className="term__screen">
@@ -322,6 +452,137 @@ export function PiTerminalBody({ workspaceId, el, active, visible = true }: Prop
           }}
         />
       </div>
+      <div
+        className="pi-composer"
+        onPointerDown={event => event.stopPropagation()}
+        onKeyDown={event => event.stopPropagation()}
+      >
+        <textarea
+          className="pi-composer__input"
+          aria-label="Pi prompt draft"
+          placeholder="Draft a prompt…"
+          value={draft}
+          maxLength={64 * 1024}
+          spellCheck={false}
+          onChange={event => {
+            persistDraft(event.target.value)
+            setComposerError(undefined)
+            setComposerState(undefined)
+          }}
+          onKeyDown={event => {
+            if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+              event.preventDefault()
+              void submitDraft()
+            }
+          }}
+        />
+        <div className="pi-composer__bar">
+          {activeRun && (
+            <div className="pi-composer__delivery" aria-label="Busy prompt delivery">
+              <button
+                className={delivery === 'followUp' ? 'is-active' : undefined}
+                onClick={() => setPreferredDelivery('followUp')}
+                title="Queue after the current response"
+              >
+                follow up
+              </button>
+              <button
+                className={delivery === 'steer' ? 'is-active' : undefined}
+                onClick={() => setPreferredDelivery('steer')}
+                title="Steer at the next model boundary"
+              >
+                steer
+              </button>
+            </div>
+          )}
+          {activeRun && (
+            <button className="pi-composer__abort" disabled={submitting} onClick={() => { void abortRun() }}>
+              abort
+            </button>
+          )}
+          <span className={`pi-composer__result${composerError ? ' is-error' : ''}`} title={composerError}>
+            {composerError || composerState || (queuePending ? 'Pi queue pending' : activeRun ? 'run active' : '⌘↵ send')}
+          </span>
+          <button
+            className="pi-composer__send"
+            disabled={!draft.trim() || !runtimeRef.current || submitting}
+            onClick={() => { void submitDraft() }}
+          >
+            {activeRun ? (delivery === 'steer' ? 'Steer' : 'Queue') : 'Send'}
+          </button>
+        </div>
+      </div>
+      {catalog && (
+        <details
+          className="pi-settings"
+          onPointerDown={event => event.stopPropagation()}
+          onKeyDown={event => event.stopPropagation()}
+        >
+          <summary>
+            settings · {el.provider && el.model ? `${el.provider}/${el.model}` : 'Pi model'}
+            {settingsBusy ? ' · applying…' : ''}
+          </summary>
+          <div className="pi-settings__grid">
+            <label>
+              <span>Model</span>
+              <select
+                value={currentModelKey}
+                disabled={activeRun || settingsBusy}
+                onChange={event => {
+                  const [provider, id] = JSON.parse(event.target.value) as [string, string]
+                  void applyConfiguration({ type: 'configure', model: { provider, id } })
+                }}
+              >
+                {!catalog.models.some(model => JSON.stringify([model.provider, model.id]) === currentModelKey) && (
+                  <option value={currentModelKey}>{currentModelKey ? `${el.provider}/${el.model}` : 'Pi default'}</option>
+                )}
+                {catalog.models.map(model => (
+                  <option key={`${model.provider}/${model.id}`} value={JSON.stringify([model.provider, model.id])}>
+                    {model.name ? `${model.name} · ` : ''}{model.provider}/{model.id}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Thinking</span>
+              <select
+                value={el.thinkingLevel ?? ''}
+                disabled={activeRun || settingsBusy}
+                onChange={event => {
+                  void applyConfiguration({
+                    type: 'configure',
+                    thinkingLevel: event.target.value as PiCompanionThinkingLevel,
+                  })
+                }}
+              >
+                {!el.thinkingLevel && <option value="">current</option>}
+                {catalog.thinkingLevels.map(level => <option key={level} value={level}>{level}</option>)}
+              </select>
+            </label>
+          </div>
+          <fieldset className="pi-settings__tools" disabled={activeRun || settingsBusy}>
+            <legend>Active tools</legend>
+            {catalog.tools.map(tool => (
+              <label key={tool.name} title={tool.description}>
+                <input
+                  type="checkbox"
+                  checked={tool.active}
+                  onChange={() => {
+                    void applyConfiguration({
+                      type: 'configure',
+                      tool: { name: tool.name, active: !tool.active },
+                    })
+                  }}
+                />
+                <span>{tool.name}</span>
+              </label>
+            ))}
+          </fieldset>
+          <div className={`pi-settings__note${settingsError ? ' is-error' : ''}`}>
+            {settingsError || (activeRun ? 'Settings are locked until the active run settles.' : 'Live Pi session settings; trust and credentials are unchanged.')}
+          </div>
+        </details>
+      )}
       <div className="term__status">
         <span className={`term__dot ${connection === 'connected' ? 'term__dot--on' : 'term__dot--off'}`} />
         {connection === 'connected'

@@ -26,6 +26,27 @@ const frames = [
   { ...runtime, type: 'result', requestId: 'request-1', ok: true },
   { ...runtime, type: 'ping', nonce: 'host-1' },
   { ...runtime, type: 'pong', nonce: 'host-1' },
+  { ...runtime, type: 'event', seq: 2, event: { type: 'queue', pending: true } },
+  {
+    ...runtime, type: 'event', seq: 3,
+    event: {
+      type: 'catalog',
+      models: [{ provider: 'synthetic', id: 'model-1', name: 'Model One' }],
+      thinkingLevels: ['off', 'high'],
+      tools: [{ name: 'read', description: 'Read files', active: true }],
+    },
+  },
+  {
+    ...runtime, type: 'control', requestId: 'configure-1',
+    control: {
+      type: 'configure', model: { provider: 'synthetic', id: 'model-1' },
+      thinkingLevel: 'high', activeTools: ['read'],
+    },
+  },
+  {
+    ...runtime, type: 'control', requestId: 'tool-toggle-1',
+    control: { type: 'configure', tool: { name: 'read', active: false } },
+  },
 ]
 
 test('versioned frames round-trip and preserve distinct runtime identity', () => {
@@ -87,6 +108,11 @@ test('malformed, oversized and capability-leaking frames fail closed', () => {
   assert.throws(() => decode({ ...frames[2], generation: 0 }), /generation/)
   assert.throws(() => decode({ ...frames[2], token }), /only valid/)
   assert.throws(() => decode({ ...runtime, type: 'control', requestId: 'x', control: { type: 'prompt', text: '' } }), /prompt/)
+  assert.throws(() => decode({ ...runtime, type: 'control', requestId: 'x', control: { type: 'configure' } }), /Empty configure/)
+  assert.throws(() => decode({ ...runtime, type: 'control', requestId: 'x', control: { type: 'configure', activeTools: ['read', 'read'] } }), /configure tools/)
+  assert.throws(() => decode({ ...runtime, type: 'control', requestId: 'x', control: { type: 'configure', activeTools: ['read'], tool: { name: 'edit', active: true } } }), /cannot combine/)
+  assert.throws(() => decode({ ...runtime, type: 'event', seq: 4, event: { type: 'catalog', models: [], thinkingLevels: ['extreme'], tools: [] } }), /thinking/)
+  assert.throws(() => decode({ ...runtime, type: 'event', seq: 5, event: { type: 'queue', pending: 'yes' } }), /queue/)
   assert.throws(() => protocol.decodePiCompanionFrame('x'.repeat(protocol.PI_COMPANION_MAX_FRAME_BYTES + 1)), /bounds/)
 
   const decoder = new protocol.PiCompanionFrameDecoder()
