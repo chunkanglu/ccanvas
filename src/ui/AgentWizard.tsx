@@ -2,11 +2,13 @@ import { useState } from 'react'
 import { useStore, selectActive } from '../store/workspace'
 import type { AgentWizardCtx } from '../store/workspace'
 import { AGENT_COLORS, claudeColorName } from '../lib/types'
-import type { WidgetElement } from '../lib/types'
-import { sendTo, isLive } from '../lib/agents'
+import type { AgentHarness, AgentThinkingLevel, WidgetElement } from '../lib/types'
+import { agentRuntimeId, renameSession, sendTo, isLive } from '../lib/agents'
 import { IconAgent } from './icons'
 
 const MODELS = ['default', 'opus', 'sonnet', 'haiku']
+type ThinkingChoice = 'default' | AgentThinkingLevel
+const THINKING: ThinkingChoice[] = ['default', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
 const DEFAULT_COLOR = AGENT_COLORS[0].hex
 
 // Modal shown when creating (or editing) an agent — set its name, colour,
@@ -30,9 +32,12 @@ function Wizard({ ctx }: { ctx: AgentWizardCtx }) {
     : undefined
   const editing = !!existing
 
+  const [harness, setHarness] = useState<AgentHarness>(existing?.harness ?? ctx.harness ?? 'claude')
   const [name, setName] = useState(existing?.title ?? ctx.title ?? '')
   const [color, setColor] = useState(existing?.color ?? DEFAULT_COLOR)
-  const [model, setModel] = useState(existing?.model ?? ctx.model ?? 'default')
+  const [provider, setProvider] = useState(existing?.provider ?? '')
+  const [model, setModel] = useState(existing?.model ?? ctx.model ?? (harness === 'claude' ? 'default' : ''))
+  const [thinking, setThinking] = useState<ThinkingChoice>(existing?.thinkingLevel ?? 'default')
   const [skip, setSkip] = useState(existing?.skipPermissions ?? false)
   const [prompt, setPrompt] = useState(existing?.agentPrompt ?? ctx.agentPrompt ?? '')
 
@@ -41,29 +46,43 @@ function Wizard({ ctx }: { ctx: AgentWizardCtx }) {
     : (ctx.cwd ?? ws.dir)?.replace(/[\\/]+$/, '').split(/[\\/]/).pop()
 
   const submit = () => {
-    const title = name.trim() || 'claude agent'
-    const cleanModel = model === 'default' ? undefined : model
+    const title = name.trim() || `${harness} agent`
+    const cleanModel = model === 'default' || !model.trim() ? undefined : model.trim()
     if (editing && existing) {
       beginHistory()
       mutateElement(existing.id, (w) => {
         const a = w as WidgetElement
         a.title = title
         a.color = color
+        a.harness = harness
         a.model = cleanModel
-        a.skipPermissions = skip
-        a.agentPrompt = prompt.trim() || undefined
+        if (harness === 'pi') {
+          a.provider = provider.trim() || undefined
+          a.thinkingLevel = thinking === 'default' ? undefined : thinking
+          a.skipPermissions = false
+          a.agentPrompt = undefined
+        } else {
+          a.provider = undefined
+          a.thinkingLevel = undefined
+          a.skipPermissions = skip
+          a.agentPrompt = prompt.trim() || undefined
+        }
       })
-      if (isLive(existing.id)) {
-        if (title !== existing.title) sendTo(existing.id, `/rename ${title}\r`)
-        sendTo(existing.id, `/color ${claudeColorName(color)}\r`)
+      const runtimeId = agentRuntimeId(ws.id, existing)
+      if (isLive(runtimeId)) {
+        if (title !== existing.title) renameSession(runtimeId, title)
+        if (harness === 'claude') sendTo(runtimeId, `/color ${claudeColorName(color)}\r`)
       }
     } else {
       spawnWidget('agent', ctx.x, ctx.y, {
         title,
         color,
+        harness,
+        provider: harness === 'pi' ? provider.trim() || undefined : undefined,
         model: cleanModel,
-        skipPermissions: skip,
-        agentPrompt: prompt.trim() || undefined,
+        thinkingLevel: harness === 'pi' && thinking !== 'default' ? thinking : undefined,
+        skipPermissions: harness === 'claude' ? skip : false,
+        agentPrompt: harness === 'claude' ? prompt.trim() || undefined : undefined,
         ...(ctx.cwd ? { cwd: ctx.cwd } : {}),
         ...(ctx.worktree ? { worktree: ctx.worktree } : {}),
       })
@@ -90,11 +109,30 @@ function Wizard({ ctx }: { ctx: AgentWizardCtx }) {
           {folder && <span className="wiz__folder">{folder}</span>}
         </div>
 
+        <label className="wiz__label">Harness</label>
+        <div className="wiz__seg">
+          {(['claude', 'pi'] as AgentHarness[]).map((value) => (
+            <button
+              key={value}
+              className={`wiz__seg-btn${harness === value ? ' wiz__seg-btn--active' : ''}`}
+              disabled={editing}
+              title={editing ? 'Harness cannot change after creation' : undefined}
+              onClick={() => {
+                setHarness(value)
+                setModel(value === 'claude' ? 'default' : '')
+                setSkip(false)
+              }}
+            >
+              {value}
+            </button>
+          ))}
+        </div>
+
         <label className="wiz__label">Name</label>
         <input
           className="wiz__input"
           autoFocus
-          placeholder="claude agent"
+          placeholder={`${harness} agent`}
           value={name}
           spellCheck={false}
           onChange={(e) => setName(e.target.value)}
@@ -116,32 +154,71 @@ function Wizard({ ctx }: { ctx: AgentWizardCtx }) {
           ))}
         </div>
 
-        <label className="wiz__label">Model</label>
-        <div className="wiz__seg">
-          {MODELS.map((m) => (
-            <button
-              key={m}
-              className={`wiz__seg-btn${model === m ? ' wiz__seg-btn--active' : ''}`}
-              onClick={() => setModel(m)}
-            >
-              {m}
-            </button>
-          ))}
-        </div>
+        {harness === 'claude' ? (
+          <>
+            <label className="wiz__label">Model</label>
+            <div className="wiz__seg">
+              {MODELS.map((m) => (
+                <button
+                  key={m}
+                  className={`wiz__seg-btn${model === m ? ' wiz__seg-btn--active' : ''}`}
+                  onClick={() => setModel(m)}
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
 
-        <label className="wiz__check">
-          <input type="checkbox" checked={skip} onChange={(e) => setSkip(e.target.checked)} />
-          skip permission prompts <code>--dangerously-skip-permissions</code>
-        </label>
+            <label className="wiz__check">
+              <input type="checkbox" checked={skip} onChange={(e) => setSkip(e.target.checked)} />
+              skip permission prompts <code>--dangerously-skip-permissions</code>
+            </label>
 
-        <label className="wiz__label">Initial prompt (optional)</label>
-        <textarea
-          className="wiz__textarea"
-          placeholder="What should this agent start working on?"
-          value={prompt}
-          spellCheck={false}
-          onChange={(e) => setPrompt(e.target.value)}
-        />
+            <label className="wiz__label">Initial prompt (optional)</label>
+            <textarea
+              className="wiz__textarea"
+              placeholder="What should this agent start working on?"
+              value={prompt}
+              spellCheck={false}
+              onChange={(e) => setPrompt(e.target.value)}
+            />
+          </>
+        ) : (
+          <>
+            <label className="wiz__label">Provider (optional)</label>
+            <input
+              className="wiz__input"
+              placeholder="anthropic"
+              value={provider}
+              disabled={editing}
+              spellCheck={false}
+              onChange={(e) => setProvider(e.target.value)}
+            />
+            <label className="wiz__label">Model (optional)</label>
+            <input
+              className="wiz__input"
+              placeholder="use Pi default"
+              value={model}
+              disabled={editing}
+              spellCheck={false}
+              onChange={(e) => setModel(e.target.value)}
+            />
+            <label className="wiz__label">Thinking</label>
+            <div className="wiz__seg">
+              {THINKING.map((level) => (
+                <button
+                  key={level}
+                  className={`wiz__seg-btn${thinking === level ? ' wiz__seg-btn--active' : ''}`}
+                  disabled={editing}
+                  onClick={() => setThinking(level)}
+                >
+                  {level}
+                </button>
+              ))}
+            </div>
+            {editing && <span className="wiz__hint">Recreate the agent to change runtime settings.</span>}
+          </>
+        )}
 
         <div className="wiz__actions">
           <button className="wiz__btn" onClick={close}>

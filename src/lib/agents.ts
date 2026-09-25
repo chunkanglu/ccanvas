@@ -6,6 +6,7 @@
 // re-renders the status dots, not the whole canvas.
 
 import { create } from 'zustand'
+import type { WidgetElement } from './types'
 
 export type AgentStatus =
   | 'off' // no live shell (local fallback / not connected)
@@ -73,6 +74,13 @@ export const useAgents = create<StatusState>((set) => ({
     }),
 }))
 
+/** Runtime key for agent state/transports; Pi widgets are workspace scoped. */
+export function agentRuntimeId(workspaceId: string, agent: Pick<WidgetElement, 'id' | 'kind'>): string {
+  return agent.kind === 'agent' || agent.kind === 'terminal'
+    ? `${workspaceId}:${agent.id}`
+    : agent.id
+}
+
 /** Best-effort scrape of a USD cost from `/cost` output. null if none found. */
 export function scrapeCost(text: string): number | null {
   const m = /(?:total|session)\s+cost:?\s*\$?\s*([0-9]+(?:\.[0-9]+)?)/i.exec(stripAnsi(text))
@@ -80,20 +88,33 @@ export function scrapeCost(text: string): number | null {
 }
 
 // ---------- transport registry (non-reactive) ----------
-type Live = { send: (d: string) => void; kind: 'terminal' | 'agent'; title: string }
-const transports = new Map<string, Live>()
-
-export function registerTransport(id: string, live: Live) {
-  transports.set(id, live)
+type Live = {
+  send: (d: string) => void
+  kind: 'terminal' | 'agent'
+  title: string
+  /** Semantic operations avoid typing into an unrelated native Pi overlay. */
+  prompt?: (text: string) => void | Promise<void>
+  rename?: (name: string) => void | Promise<void>
 }
-export function unregisterTransport(id: string) {
+type OwnedLive = Live & { owner: symbol }
+const transports = new Map<string, OwnedLive>()
+
+export function registerTransport(id: string, live: Live): symbol {
+  const owner = Symbol(id)
+  transports.set(id, { ...live, owner })
+  return owner
+}
+export function unregisterTransport(id: string, owner: symbol | undefined): boolean {
+  if (owner === undefined) return !transports.has(id)
+  if (transports.get(id)?.owner !== owner) return false
   transports.delete(id)
+  return true
 }
 export function isLive(id: string): boolean {
   return transports.has(id)
 }
 export function liveSessions(): Array<{ id: string } & Live> {
-  return [...transports.entries()].map(([id, l]) => ({ id, ...l }))
+  return [...transports.entries()].map(([id, { owner: _owner, ...live }]) => ({ id, ...live }))
 }
 
 /** Write the same data to many live sessions (the broadcast feature). */
@@ -117,8 +138,34 @@ export function sendTo(id: string, data: string): boolean {
  */
 export function sendPrompt(id: string, text: string, submit = true): boolean {
   const body = text.replace(/\r/g, '').replace(/\n+$/, '')
+  const transport = transports.get(id)
+  if (!transport) return false
+  if (submit && transport.prompt) {
+    void Promise.resolve(transport.prompt(body)).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error)
+      console.error(`Agent prompt control failed for ${id}: ${message}`)
+      notify(transport.title || 'Agent', `prompt failed: ${message}`)
+    })
+    return true
+  }
   const wrapped = body.includes('\n') ? `\x1b[200~${body}\x1b[201~` : body
-  return sendTo(id, submit ? `${wrapped}\r` : wrapped)
+  transport.send(submit ? `${wrapped}\r` : wrapped)
+  return true
+}
+
+export function renameSession(id: string, name: string): boolean {
+  const transport = transports.get(id)
+  if (!transport) return false
+  if (transport.rename) {
+    void Promise.resolve(transport.rename(name)).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error)
+      console.error(`Agent rename control failed for ${id}: ${message}`)
+      notify(transport.title || 'Agent', `rename failed: ${message}`)
+    })
+  } else {
+    transport.send(`/rename ${name}\r`)
+  }
+  return true
 }
 
 // ---------- status classification from terminal output ----------

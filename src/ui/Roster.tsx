@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useStore } from '../store/workspace'
-import { useAgents, sendPrompt } from '../lib/agents'
+import { agentRuntimeId, useAgents, sendPrompt } from '../lib/agents'
 import type { WidgetElement, Workspace } from '../lib/types'
 import { IconClose, IconBroadcast, IconTrack } from './icons'
 import '../styles/agent-tools.css'
@@ -8,6 +8,7 @@ import '../styles/agent-tools.css'
 const CHROME_H = 82
 
 type Row = { agent: WidgetElement; tab: Workspace }
+const rowRuntimeId = (row: Row) => agentRuntimeId(row.tab.id, row.agent)
 
 // Mission-control list of every agent across all tabs: status, cost/turns, last
 // line, click-to-focus, and a composer that sends to one agent or broadcasts to
@@ -17,6 +18,7 @@ export function Roster() {
   const tabs = useStore((s) => s.tabs)
   const activeTabId = useStore((s) => s.activeTabId)
   const trackingId = useStore((s) => s.trackingAgentId)
+  const trackingTabId = useStore((s) => s.trackingAgentTabId)
   const switchTab = useStore((s) => s.switchTab)
   const setCamera = useStore((s) => s.setCamera)
   const setSelection = useStore((s) => s.setSelection)
@@ -54,22 +56,20 @@ export function Roster() {
     setSelection([row.agent.id])
     setActiveWidget(row.agent.id)
     bringToFront([row.agent.id])
-    setTarget(row.agent.id)
+    setTarget(rowRuntimeId(row))
   }
 
   const send = () => {
     const body = text.trim()
     if (!body) return
-    const ids = target ? [target] : rows.map((r) => r.agent.id)
+    const ids = target ? [target] : rows.map(rowRuntimeId)
     let delivered = 0
     for (const id of ids) if (sendPrompt(id, body)) delivered++
     if (delivered) setText('')
   }
 
-  const targetLabel =
-    target && rows.find((r) => r.agent.id === target)
-      ? rows.find((r) => r.agent.id === target)!.agent.title
-      : 'all agents'
+  const targetRow = target ? rows.find((row) => rowRuntimeId(row) === target) : undefined
+  const targetLabel = targetRow?.agent.title ?? 'all agents'
 
   return (
     <div className="panel">
@@ -87,14 +87,15 @@ export function Roster() {
           <div className="panel__empty">No agents yet. Spawn one with the “a” tool or ⌘K.</div>
         )}
         {rows.map((row) => {
-          const st = status[row.agent.id] ?? 'off'
-          const m = metrics[row.agent.id]
-          const ll = lastLine[row.agent.id]
-          const tracking = trackingId === row.agent.id
+          const runtimeId = rowRuntimeId(row)
+          const st = status[runtimeId] ?? 'off'
+          const m = metrics[runtimeId]
+          const ll = lastLine[runtimeId]
+          const tracking = trackingId === row.agent.id && trackingTabId === row.tab.id
           return (
             <div
-              key={row.agent.id}
-              className={`roster__row${target === row.agent.id ? ' roster__row--target' : ''}`}
+              key={runtimeId}
+              className={`roster__row${target === runtimeId ? ' roster__row--target' : ''}`}
               onClick={() => focus(row)}
             >
               <span className={`agent-dot agent-dot--${st}`} title={st} />
@@ -112,17 +113,19 @@ export function Roster() {
                 </div>
                 {ll && <div className="roster__last">{ll}</div>}
               </div>
-              <button
-                className={`roster__track${tracking ? ' roster__track--on' : ''}`}
-                title={tracking ? 'Stop tracking camera' : 'Track this agent (orbit its files)'}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  if (tracking) stopTrackingAgent(false)
-                  else void startTrackingAgent(row.agent.id)
-                }}
-              >
-                <IconTrack size={15} />
-              </button>
+              {row.agent.harness !== 'pi' && (
+                <button
+                  className={`roster__track${tracking ? ' roster__track--on' : ''}`}
+                  title={tracking ? 'Stop tracking camera' : 'Track this agent (orbit its files)'}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    if (tracking) stopTrackingAgent(false)
+                    else void startTrackingAgent(row.agent.id, row.tab.id)
+                  }}
+                >
+                  <IconTrack size={15} />
+                </button>
+              )}
             </div>
           )
         })}

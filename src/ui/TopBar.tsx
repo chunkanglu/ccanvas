@@ -13,6 +13,7 @@ import {
   IconClaude,
 } from './icons'
 import { UsagePill } from './UsagePill'
+import { APP_NAME } from '../lib/fork'
 
 export function TopBar() {
   const ws = useStore(selectActive)
@@ -40,7 +41,7 @@ export function TopBar() {
           <IconMark />
         </span>
         <span className="brand__name">
-          c<b>canvas</b>
+          {APP_NAME}
         </span>
         <span className="brand__dot" />
       </div>

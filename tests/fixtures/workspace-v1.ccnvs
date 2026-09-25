@@ -1,0 +1,21 @@
+{
+  "format": "ccnvs",
+  "version": 1,
+  "name": "stage-zero-fixture",
+  "camera": { "x": 20, "y": 30, "zoom": 0.8 },
+  "elements": [
+    {
+      "id": "agent-fixture", "type": "widget", "kind": "agent",
+      "x": 0, "y": 0, "w": 540, "h": 380, "z": 1,
+      "title": "Fixture reviewer", "model": "sonnet",
+      "sessionId": "00000000-0000-4000-8000-000000000001",
+      "agentStarted": true, "agentPrompt": "Review this synthetic example only.",
+      "skipPermissions": false, "color": "#c89bd6"
+    },
+    {
+      "id": "transcript-fixture", "type": "widget", "kind": "transcript",
+      "x": 600, "y": 0, "w": 460, "h": 520, "z": 2,
+      "title": "Fixture transcript", "agentId": "agent-fixture"
+    }
+  ]
+}

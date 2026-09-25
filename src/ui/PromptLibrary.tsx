@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useStore, selectActive } from '../store/workspace'
-import { sendPrompt, isLive } from '../lib/agents'
+import { agentRuntimeId, sendPrompt, isLive } from '../lib/agents'
+import type { WidgetElement } from '../lib/types'
 import { IconClose, IconPlus } from './icons'
 import '../styles/agent-tools.css'
 
@@ -10,7 +11,7 @@ import '../styles/agent-tools.css'
 
 /** The agent/terminal a library insert should target: the active one, else the
  *  first selected agent. Returns null if nothing suitable is focused. */
-function targetAgentId(): string | null {
+function targetAgent(): { widgetId: string; runtimeId: string } | null {
   const s = useStore.getState()
   const ws = selectActive(s)
   const byId = new Map(ws.elements.map((e) => [e.id, e]))
@@ -19,9 +20,12 @@ function targetAgentId(): string | null {
     const el = byId.get(id)
     return !!el && el.type === 'widget' && (el.kind === 'agent' || el.kind === 'terminal')
   }
-  if (isInjectable(s.activeWidgetId)) return s.activeWidgetId
-  const sel = s.selection.find((id) => isInjectable(id))
-  return sel ?? null
+  const widgetId = isInjectable(s.activeWidgetId)
+    ? s.activeWidgetId!
+    : s.selection.find((id) => isInjectable(id))
+  if (!widgetId) return null
+  const el = byId.get(widgetId)!
+  return { widgetId, runtimeId: agentRuntimeId(ws.id, el as WidgetElement) }
 }
 
 export function PromptLibrary() {
@@ -37,14 +41,14 @@ export function PromptLibrary() {
   const [note, setNote] = useState('')
 
   const insert = (promptText: string) => {
-    const id = targetAgentId()
-    if (!id || !isLive(id)) {
+    const target = targetAgent()
+    if (!target || !isLive(target.runtimeId)) {
       setNote('Focus a running agent first, or drag the prompt onto one.')
       setTimeout(() => setNote(''), 2600)
       return
     }
-    sendPrompt(id, promptText, false)
-    setActiveWidget(id)
+    sendPrompt(target.runtimeId, promptText, false)
+    setActiveWidget(target.widgetId)
     setOpenPanel(null)
   }
 

@@ -60,7 +60,7 @@ struct PtyExit {
 }
 
 fn default_shell() -> CommandBuilder {
-    if cfg!(windows) {
+    let mut cmd = if cfg!(windows) {
         let shell = std::env::var("CCANVAS_SHELL").unwrap_or_else(|_| "powershell.exe".into());
         CommandBuilder::new(shell)
     } else {
@@ -68,6 +68,43 @@ fn default_shell() -> CommandBuilder {
             .or_else(|_| std::env::var("SHELL"))
             .unwrap_or_else(|_| "bash".into());
         CommandBuilder::new(shell)
+    };
+    // Keep PATH/SystemRoot/etc., but advertise the renderer we actually host.
+    // Finder/Spotlight launches commonly have no TERM; inheriting that makes
+    // zsh use dumb-terminal editing (e.g. backspaces paint blanks). A parent
+    // terminal's own TERM may also describe capabilities xterm.js lacks.
+    for (k, v) in std::env::vars() {
+        cmd.env(k, v);
+    }
+    configure_terminal_env(&mut cmd);
+    cmd
+}
+
+fn configure_terminal_env(cmd: &mut CommandBuilder) {
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn terminal_capabilities_do_not_depend_on_launcher_environment() {
+        for inherited in [None, Some("dumb"), Some("xterm-ghostty")] {
+            let mut cmd = CommandBuilder::new("unused-test-shell");
+            cmd.env_clear();
+            cmd.env("KEEP_ME", "unchanged");
+            if let Some(value) = inherited {
+                cmd.env("TERM", value);
+            }
+            cmd.env("COLORTERM", "incorrect-parent-value");
+            configure_terminal_env(&mut cmd);
+            assert_eq!(cmd.get_env("TERM"), Some(OsStr::new("xterm-256color")));
+            assert_eq!(cmd.get_env("COLORTERM"), Some(OsStr::new("truecolor")));
+            assert_eq!(cmd.get_env("KEEP_ME"), Some(OsStr::new("unchanged")));
+        }
     }
 }
 
@@ -140,10 +177,6 @@ fn spawn_session(
         .map_err(|e| e.to_string())?;
 
     let mut cmd = default_shell();
-    // inherit the full environment (PowerShell needs SystemRoot/PATH/etc.)
-    for (k, v) in std::env::vars() {
-        cmd.env(k, v);
-    }
     if let Some(dir) = cwd.filter(|d| !d.is_empty()) {
         cmd.cwd(dir);
     }

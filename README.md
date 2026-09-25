@@ -1,3 +1,59 @@
+# ccanvas Pi — personal fork
+
+Personal fork of [DevoidSloth/ccanvas](https://github.com/DevoidSloth/ccanvas),
+maintained at [chunkanglu/ccanvas](https://github.com/chunkanglu/ccanvas).
+**Phases 0–1 are complete. Phase 2's native managed Pi TUI is available as an
+explicit test option; Claude remains the new-agent default until parity gates pass.**
+
+- App identity: **ccanvas Pi**, `io.github.chunkanglu.ccanvas-pi`.
+- Development UI: `127.0.0.1:5174`; preview: `127.0.0.1:4174`; optional local
+  backend: `127.0.0.1:7532`. Settings use `ccanvas-pi:*`, not upstream's keys.
+- `fork.config.json` is the shared isolation config. Its `piLauncher` records
+  `PI_TOOLS_IDLE_TIMEOUT_MS=6000000 pi` for probes and the managed native runtime.
+  It does **not** flip the default away from Claude.
+- `npm run test:stage0` uses existing dependencies; `npm run probe:pi` is an
+  opt-in, no-LLM RPC startup probe. `npm run probe:pi:tui` checks native custom UI
+  and synthetic session lifecycle; `npm run probe:pi:companion` checks the phase 2
+  private channel against actual Pi without a model/tool call. All load normal
+  extensions, so startup hooks run.
+- [Phase 0 evidence and acceptance](docs/pi-integration-status.md) ·
+  [Phase 1 schema/controller](docs/phase1-schema.md) ·
+  [Phase 2 runtime status](docs/phase2-runtime.md) ·
+  [Installed-extension compatibility findings](docs/pi-compatibility.md) ·
+  [Approved TUI direction and probe](docs/pi-tui-probe.md).
+- Fork releases are manual `pi-v*` draft prereleases; upstream `v*` tags do not
+  publish a fork release. No packages or user configuration are auto-installed.
+
+The upstream feature documentation follows. Until integration lands, descriptions
+of Claude agent behavior below remain accurate. Use copies of `.ccnvs` files when
+trying the fork: explicit file saves still write to the selected workspace folder.
+
+## Local macOS rebuild + Spotlight installation
+
+Quit ccanvas Pi, then run from this repository:
+
+```sh
+npm run app:install             # fast unsigned debug build + install
+npm run app:build               # release build + install
+npm run app:build -- --debug    # explicit debug rebuild + install
+```
+
+Successful local macOS builds replace **`~/Applications/ccanvas Pi.app`**, register
+Launch Services and request Spotlight indexing. Search **ccanvas Pi** to launch.
+The installer checks bundle identity, refuses running apps/unrelated destinations,
+and stages a complete replacement so obsolete resources do not accumulate.
+No administrator rights, automatic quit/relaunch, signing or notarization.
+
+Builds use existing cached dependencies (`--offline --locked`). A failed build or
+missing/stale bundle never installs an older artifact. CI and non-macOS builds do
+not install locally. Use `CCANVAS_SKIP_APP_INSTALL=1` to skip installation or
+`npm run app:bundle -- ...` for raw Tauri packaging/custom targets/signing without
+installation. Web builds and the `npm run app` hot-reload loop do not reinstall.
+If an interrupted installer leaves `.ccanvas-pi-install.lock` in Applications,
+check that no installer is running before removing that empty lock directory.
+
+---
+
 <div align="center">
 
 # ccanvas
@@ -32,7 +88,7 @@ oriented.
 ```bash
 npm install
 npm run app        # dev: launches the native window
-npm run app:build  # build an installer → src-tauri/target/release/bundle
+npm run app:build  # fork: release build + local macOS install (see above)
 ```
 
 The desktop build is the real thing: native folder/file dialogs, native file
@@ -43,7 +99,7 @@ the WebView2 runtime (preinstalled on Windows 11).
 ### Web app
 
 ```bash
-npm run dev        # → http://127.0.0.1:5173
+npm run dev        # fork → http://127.0.0.1:5174
 ```
 
 In the browser the canvas can't reach the filesystem on its own, so real
@@ -51,7 +107,7 @@ terminals + folders come from an optional local backend (run it in a second
 terminal, or `npm start` to run both at once):
 
 ```bash
-npm run server     # ws + http on 127.0.0.1:7531
+npm run server     # fork ws + http on 127.0.0.1:7532
 npm start          # runs the pty server and the web app together
 ```
 
@@ -142,7 +198,7 @@ three features are the answer at scale:
 
 Before turning an agent loose on your working tree, drop a **checkpoint**
 (command palette → *Checkpoints*). Each one is a real git object created with
-`git stash create` and pinned under `refs/ccanvas/cp/<id>` so gc never collects
+`git stash create` and pinned under `refs/ccanvas-pi/cp/<id>` in this fork so gc never collects
 it, and it snapshots tracked changes **without** touching your working tree or
 the stash list. Restore is deliberately non-destructive: it resets tracked
 content to the snapshot but never deletes files the agent created afterwards.

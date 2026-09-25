@@ -1,18 +1,18 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "ccanvas",
+  "productName": "ccanvas Pi",
   "version": "0.5.1",
-  "identifier": "dev.ccanvas.app",
+  "identifier": "io.github.chunkanglu.ccanvas-pi",
   "build": {
     "frontendDist": "../dist",
-    "devUrl": "http://127.0.0.1:5173",
+    "devUrl": "http://127.0.0.1:5174",
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build"
   },
   "app": {
     "windows": [
       {
-        "title": "ccanvas",
+        "title": "ccanvas Pi",
         "width": 1280,
         "height": 820,
         "minWidth": 720,
@@ -33,6 +33,10 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": {
+      "../scripts/pi-companion-extension.ts": "companion/scripts/pi-companion-extension.ts",
+      "../src/lib/pi-companion-protocol.ts": "companion/src/lib/pi-companion-protocol.ts"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

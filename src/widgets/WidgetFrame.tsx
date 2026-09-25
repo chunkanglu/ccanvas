@@ -28,7 +28,7 @@ import {
   IconClaude,
   IconInfo,
 } from '../ui/icons'
-import { useAgents, sendTo, sendPrompt, isLive as isSessionLive, type AgentMetrics } from '../lib/agents'
+import { agentRuntimeId, useAgents, sendTo, sendPrompt, renameSession, isLive as isSessionLive, type AgentMetrics } from '../lib/agents'
 import { NoteBody } from './NoteBody'
 import { WebBody } from './WebBody'
 import { TerminalBody } from './TerminalBody'
@@ -77,11 +77,13 @@ const MIN_W = 220
 const MIN_H = 150
 
 export function WidgetFrame({
+  workspaceId,
   el,
   selected,
   onStartMove,
   visible = true,
 }: {
+  workspaceId: string
   el: WidgetElement
   selected: boolean
   onStartMove: (e: React.PointerEvent, id: string) => void
@@ -98,11 +100,12 @@ export function WidgetFrame({
   const beginHistory = useStore((s) => s.beginHistory)
   const openAgentWizard = useStore((s) => s.openAgentWizard)
 
-  const active = activeWidgetId === el.id
+  const active = visible && activeWidgetId === el.id
   const Icon = KIND_ICON[el.kind]
   const accent = el.color ?? WIDGET_ACCENT[el.kind]
   // terminals/agents are live — interact on a single click, drag by the title bar
   const isTerminal = el.kind === 'terminal' || el.kind === 'agent'
+  const sessionId = agentRuntimeId(workspaceId, el)
   // app-like panels also interact on a single click (no double-click shield)
   const isLive =
     isTerminal ||
@@ -198,10 +201,10 @@ export function WidgetFrame({
       const base = el.cwd ? el.cwd.replace(/[\\/]+$/, '') : ''
       let rel = base && path.startsWith(base) ? path.slice(base.length + 1) : path
       rel = rel.replace(/\\/g, '/')
-      sendTo(el.id, `@${rel} `)
+      sendTo(sessionId, `@${rel} `)
     } else {
       // paste the snippet without auto-submitting, so it can be reviewed/edited
-      sendPrompt(el.id, prompt, false)
+      sendPrompt(sessionId, prompt, false)
     }
     select()
     setActiveWidget(el.id)
@@ -215,7 +218,7 @@ export function WidgetFrame({
         ;(w as WidgetElement).title = t
       })
       // tell a live claude agent its new name
-      if (el.kind === 'agent' && isSessionLive(el.id)) sendTo(el.id, `/rename ${t}\r`)
+      if (el.kind === 'agent' && isSessionLive(sessionId)) renameSession(sessionId, t)
     }
     setRenaming(false)
   }
@@ -292,7 +295,7 @@ export function WidgetFrame({
         <span className="widget__icon">
           <Icon />
         </span>
-        {isTerminal && <AgentDot id={el.id} />}
+        {isTerminal && <AgentDot id={sessionId} />}
         {renaming ? (
           <input
             ref={titleRef}
@@ -327,7 +330,7 @@ export function WidgetFrame({
             {folder}
           </span>
         )}
-        {el.kind === 'agent' && <AgentMeter id={el.id} />}
+        {el.kind === 'agent' && <AgentMeter id={sessionId} />}
         <span className="widget__bar-spacer" />
         <div className="widget__actions">
           {el.kind === 'agent' && (
@@ -387,7 +390,14 @@ export function WidgetFrame({
           {el.kind === 'video' && <VideoBody el={el} active={active} />}
           {el.kind === 'mediainfo' && <MediaInfoBody el={el} />}
           {el.kind === 'claude' && <ClaudeBody el={el} />}
-          {isTerminal && <TerminalBody el={el} active={active} visible={visible} />}
+          {isTerminal && (
+            <TerminalBody
+              workspaceId={workspaceId}
+              el={el}
+              active={active}
+              visible={visible}
+            />
+          )}
           {el.kind === 'files' && <FilesBody el={el} />}
           {el.kind === 'diff' && <DiffBody el={el} />}
           {el.kind === 'editor' && <EditorBody el={el} active={active} />}

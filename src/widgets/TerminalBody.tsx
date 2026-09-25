@@ -9,6 +9,7 @@ import { useStore, selectActive } from '../store/workspace'
 import { findFilePaths, widgetKindForFile } from '../lib/filetypes'
 import { resolvePath, baseName } from '../lib/backend'
 import {
+  agentRuntimeId,
   useAgents,
   registerTransport,
   unregisterTransport,
@@ -19,6 +20,7 @@ import {
   notify,
 } from '../lib/agents'
 import { onAgentTurnComplete, cleanAgentOutput } from '../lib/flow'
+import { PiTerminalBody } from './PiTerminalBody'
 
 type Mode = 'connecting' | 'pty' | 'local'
 
@@ -26,19 +28,28 @@ type Mode = 'connecting' | 'pty' | 'local'
 // zoomed in so the terminal stays crisp under the world's CSS transform
 const BASE_FONT = 12.5
 
-// Terminal widget. Prefers a real shell — the in-process PTY under Tauri, or the
-// optional WebSocket bridge in the browser. Falls back to a tiny in-browser
-// shell when neither is available. Agent widgets auto-launch `claude`.
-export function TerminalBody({
-  el,
-  active,
-  visible = true,
-}: {
+type TerminalBodyProps = {
+  workspaceId: string
   el: WidgetElement
   active: boolean
   /** is the tab this terminal lives on currently shown? */
   visible?: boolean
-}) {
+}
+
+// Pi records must never fall through to the Claude/shell launcher; they own a
+// separate managed native process and companion transport.
+export function TerminalBody(props: TerminalBodyProps) {
+  if (props.el.kind === 'agent' && props.el.harness === 'pi') {
+    return <PiTerminalBody {...props} />
+  }
+  return <PtyTerminalBody {...props} />
+}
+
+// Terminal widget. Prefers a real shell — the in-process PTY under Tauri, or the
+// optional WebSocket bridge in the browser. Falls back to a tiny in-browser
+// shell when neither is available. Claude agent widgets auto-launch `claude`.
+function PtyTerminalBody({ workspaceId, el, active, visible = true }: TerminalBodyProps) {
+  const runtimeId = agentRuntimeId(workspaceId, el)
   const hostRef = useRef<HTMLDivElement>(null)
   const innerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
@@ -337,20 +348,22 @@ export function TerminalBody({
     if (!term) return
 
     let disposed = false
+    let transportOwner: symbol | undefined
     modeRef.current = 'connecting'
     localStartedRef.current = false
     setStatus('connecting')
 
     const setAgentStatus = useAgents.getState().setStatus
-    setAgentStatus(el.id, 'connecting')
+    setAgentStatus(runtimeId, 'connecting')
 
     const goLocal = () => {
       if (disposed || modeRef.current === 'local') return
       transportRef.current = null
       modeRef.current = 'local'
       setStatus('local')
-      setAgentStatus(el.id, 'off')
-      unregisterTransport(el.id)
+      setAgentStatus(runtimeId, 'off')
+      unregisterTransport(runtimeId, transportOwner)
+      transportOwner = undefined
       ;(term as unknown as { _startLocal?: () => void })._startLocal?.()
     }
 
@@ -469,16 +482,16 @@ export function TerminalBody({
         else if (FAIL_MISSING.test(recent)) recoverSession('missing')
       }
       if (workingSince == null) workingSince = Date.now()
-      setAgentStatus(el.id, 'working')
+      setAgentStatus(runtimeId, 'working')
       wasWorking = true
       if (idleTimer) clearTimeout(idleTimer)
       idleTimer = setTimeout(() => {
         const waiting = looksLikePrompt(tail)
-        setAgentStatus(el.id, waiting ? 'waiting' : 'idle')
+        setAgentStatus(runtimeId, waiting ? 'waiting' : 'idle')
         // surface the last meaningful line for the agent roster
         if (isAgent) {
           const last = cleanAgentOutput(tail).split('\n').filter(Boolean).pop()
-          if (last) useAgents.getState().setLastLine(el.id, last.slice(0, 160))
+          if (last) useAgents.getState().setLastLine(runtimeId, last.slice(0, 160))
         }
         // ping when an agent goes quiet while you're looking elsewhere
         if (
@@ -494,18 +507,18 @@ export function TerminalBody({
         wasWorking = false
         // metrics: one working→idle turn, plus any cost scraped from output
         if (isAgent && workingSince != null) {
-          useAgents.getState().recordTurn(el.id, Math.max(0, Date.now() - workingSince - 700))
+          useAgents.getState().recordTurn(runtimeId, Math.max(0, Date.now() - workingSince - 700))
           workingSince = null
           const c = scrapeCost(tail)
-          if (c != null) useAgents.getState().setCost(el.id, c)
+          if (c != null) useAgents.getState().setCost(runtimeId, c)
           // orchestration: fire outgoing flow arrows on a genuine completion.
           // Only once ready + launch queue drained (so boot/launch settles are
           // ignored), and only for turns after the arming settle.
-          const turns = useAgents.getState().metrics[el.id]?.turns ?? 0
+          const turns = useAgents.getState().metrics[runtimeId]?.turns ?? 0
           if (ready && launchTasks.length === 0) {
             if (flowArmTurn === null) flowArmTurn = turns
             else if (!waiting && turns > flowArmTurn)
-              void onAgentTurnComplete(el.id, turns, tail)
+              void onAgentTurnComplete(el.id, turns, tail, workspaceId)
           }
         }
         onSettle()
@@ -513,7 +526,7 @@ export function TerminalBody({
     }
 
     connectPty(
-      { id: el.id, cols: term.cols, rows: term.rows, cwd: el.cwd || undefined, launch },
+      { id: runtimeId, cols: term.cols, rows: term.rows, cwd: el.cwd || undefined, launch },
       {
         onData: (chunk) => {
           term.write(chunk as string | Uint8Array)
@@ -538,8 +551,8 @@ export function TerminalBody({
         transportRef.current = t
         modeRef.current = 'pty'
         setStatus('pty')
-        setAgentStatus(el.id, 'idle')
-        registerTransport(el.id, {
+        setAgentStatus(runtimeId, 'idle')
+        transportOwner = registerTransport(runtimeId, {
           send: (d) => t.send(d),
           kind: isAgent ? 'agent' : 'terminal',
           title: el.title,
@@ -592,8 +605,9 @@ export function TerminalBody({
       if (idleTimer) clearTimeout(idleTimer)
       if (taskFallback) clearTimeout(taskFallback)
       if (readyFallback) clearTimeout(readyFallback)
-      unregisterTransport(el.id)
-      useAgents.getState().clear(el.id)
+      if (unregisterTransport(runtimeId, transportOwner)) {
+        useAgents.getState().clear(runtimeId)
+      }
       transportRef.current?.close()
       transportRef.current = null
     }

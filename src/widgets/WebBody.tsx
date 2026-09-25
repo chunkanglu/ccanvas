@@ -59,7 +59,7 @@ export function WebBody({ el, active }: { el: WidgetElement; active: boolean }) 
     setSrc(el.url ?? '')
   }, [el.url, el.path])
 
-  // the proxy lives on the Node server (port 7531); probe whether it's running
+  // the proxy lives on the fork's Node server; probe whether it's running
   useEffect(() => {
     let alive = true
     void proxyAvailable().then((on) => alive && setCanProxy(on))

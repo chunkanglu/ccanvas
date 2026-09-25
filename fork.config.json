@@ -1,0 +1,15 @@
+{
+  "appName": "ccanvas Pi",
+  "identifier": "io.github.chunkanglu.ccanvas-pi",
+  "devPort": 5174,
+  "previewPort": 4174,
+  "backendPort": 7532,
+  "storageNamespace": "ccanvas-pi",
+  "checkpointRefPrefix": "refs/ccanvas-pi/cp",
+  "piLauncher": {
+    "program": "pi",
+    "env": {
+      "PI_TOOLS_IDLE_TIMEOUT_MS": "6000000"
+    }
+  }
+}

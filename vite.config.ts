@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import fork from './fork.config.json'
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -7,12 +8,13 @@ export default defineConfig({
   // Tauri runs the dev server and shows clean Rust output
   clearScreen: false,
   server: {
-    port: 5173,
+    port: fork.devPort,
     strictPort: true,
     host: '127.0.0.1',
     // don't reload the web app when Rust files change
     watch: { ignored: ['**/src-tauri/**'] },
   },
+  preview: { port: fork.previewPort, strictPort: true, host: '127.0.0.1' },
   envPrefix: ['VITE_', 'TAURI_ENV_*'],
   // h5wasm ships a wasm binary + emscripten glue that esbuild's dep pre-bundler
   // chokes on; exclude it so it's loaded as-is by the (lazy) dynamic import.
