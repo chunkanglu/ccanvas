@@ -17,7 +17,7 @@ export type Tool =
 export type AgentHarness = 'claude' | 'pi'
 
 /** Pi reasoning levels. Claude keeps using its existing model defaults. */
-export type AgentThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+export type AgentThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
 export type WidgetKind =
   | 'terminal'

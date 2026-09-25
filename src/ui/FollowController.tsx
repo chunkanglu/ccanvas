@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useStore } from '../store/workspace'
-import { useAgents, type AgentStatus } from '../lib/agents'
+import { agentRuntimeId, useAgents, type AgentStatus } from '../lib/agents'
 
 const CHROME_H = 82
 
@@ -9,9 +9,13 @@ const CHROME_H = 82
 // owns the camera itself, so we stand down while it's active.
 function centerOnAgent(id: string) {
   const s = useStore.getState()
-  const tab = s.tabs.find((t) => t.elements.some((e) => e.id === id))
+  const tab = s.tabs.find((candidate) => candidate.elements.some(
+    (element) => element.type === 'widget' && agentRuntimeId(candidate.id, element) === id,
+  ))
   if (!tab) return
-  const agent = tab.elements.find((e) => e.id === id)
+  const agent = tab.elements.find(
+    (element) => element.type === 'widget' && agentRuntimeId(tab.id, element) === id,
+  )
   if (!agent || agent.type !== 'widget') return
   if (s.activeTabId !== tab.id) s.switchTab(tab.id)
   const cam = tab.camera
@@ -22,7 +26,7 @@ function centerOnAgent(id: string) {
     x: window.innerWidth / 2 - cx * cam.zoom,
     y: (window.innerHeight - CHROME_H) / 2 - cy * cam.zoom,
   })
-  s.setSelection([id])
+  s.setSelection([agent.id])
 }
 
 export function FollowController() {

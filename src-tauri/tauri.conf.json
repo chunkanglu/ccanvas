@@ -33,6 +33,10 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": {
+      "../scripts/pi-companion-extension.ts": "companion/scripts/pi-companion-extension.ts",
+      "../src/lib/pi-companion-protocol.ts": "companion/src/lib/pi-companion-protocol.ts"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

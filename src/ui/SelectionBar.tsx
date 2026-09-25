@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useStore, selectActive } from '../store/workspace'
-import { broadcast, isLive } from '../lib/agents'
-import type { ArrowElement, ArrowFlow, CanvasElement, FlowCondition } from '../lib/types'
+import { agentRuntimeId, sendPrompt, isLive } from '../lib/agents'
+import type { ArrowElement, ArrowFlow, CanvasElement, FlowCondition, WidgetElement } from '../lib/types'
 import {
   IconCopy,
   IconLock,
@@ -78,13 +78,13 @@ export function SelectionBar() {
   const grouped = selEls.some((e) => e.groupId)
   // live shells among the selection → broadcast targets
   const liveTargets = selEls
-    .filter((e) => e.type === 'widget' && (e.kind === 'terminal' || e.kind === 'agent'))
-    .map((e) => e.id)
+    .filter((e): e is WidgetElement => e.type === 'widget' && (e.kind === 'terminal' || e.kind === 'agent'))
+    .map((e) => agentRuntimeId(ws.id, e))
     .filter(isLive)
 
   const sendBroadcast = (submit: boolean) => {
     if (!liveTargets.length) return
-    broadcast(liveTargets, bc + (submit ? '\r' : ''))
+    for (const id of liveTargets) sendPrompt(id, bc, submit)
     if (submit) setBc('')
   }
 

@@ -2,20 +2,23 @@
 
 Personal fork of [DevoidSloth/ccanvas](https://github.com/DevoidSloth/ccanvas),
 maintained at [chunkanglu/ccanvas](https://github.com/chunkanglu/ccanvas).
-**Phases 0–1 isolation, compatibility, and harness-neutral schema work are complete.
-Agent widgets still launch Claude; the managed Pi runtime begins in phase 2.**
+**Phases 0–1 are complete. Phase 2's native managed Pi TUI is available as an
+explicit test option; Claude remains the new-agent default until parity gates pass.**
 
 - App identity: **ccanvas Pi**, `io.github.chunkanglu.ccanvas-pi`.
 - Development UI: `127.0.0.1:5174`; preview: `127.0.0.1:4174`; optional local
   backend: `127.0.0.1:7532`. Settings use `ccanvas-pi:*`, not upstream's keys.
 - `fork.config.json` is the shared isolation config. Its `piLauncher` records
-  `PI_TOOLS_IDLE_TIMEOUT_MS=6000000 pi` for the opt-in probe and future runtime;
-  it does **not** change current agent launch behavior.
+  `PI_TOOLS_IDLE_TIMEOUT_MS=6000000 pi` for probes and the managed native runtime.
+  It does **not** flip the default away from Claude.
 - `npm run test:stage0` uses existing dependencies; `npm run probe:pi` is an
   opt-in, no-LLM RPC startup probe. `npm run probe:pi:tui` checks native custom UI
-  and synthetic session lifecycle. Both load normal extensions (startup hooks run).
+  and synthetic session lifecycle; `npm run probe:pi:companion` checks the phase 2
+  private channel against actual Pi without a model/tool call. All load normal
+  extensions, so startup hooks run.
 - [Phase 0 evidence and acceptance](docs/pi-integration-status.md) ·
   [Phase 1 schema/controller](docs/phase1-schema.md) ·
+  [Phase 2 runtime status](docs/phase2-runtime.md) ·
   [Installed-extension compatibility findings](docs/pi-compatibility.md) ·
   [Approved TUI direction and probe](docs/pi-tui-probe.md).
 - Fork releases are manual `pi-v*` draft prereleases; upstream `v*` tags do not

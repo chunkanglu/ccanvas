@@ -283,17 +283,21 @@ export function Canvas() {
     // an agent → tracking camera, transcript, and a labelled box
     if (lone?.type === 'widget' && (lone as WidgetElement).kind === 'agent') {
       const agent = lone as WidgetElement
-      const tracking = useStore.getState().trackingAgentId === agent.id
-      items.push({
-        label: tracking ? 'Stop tracking camera' : 'Track this agent (orbit its files)',
-        onClick: () =>
-          tracking ? s().stopTrackingAgent(false) : void s().startTrackingAgent(agent.id),
-      })
-      if (tracking)
+      const trackingState = useStore.getState()
+      const tracking = trackingState.trackingAgentId === agent.id
+        && trackingState.trackingAgentTabId === ws.id
+      if (agent.harness !== 'pi') {
         items.push({
-          label: 'Stop tracking & clear orbit',
-          onClick: () => s().stopTrackingAgent(true),
+          label: tracking ? 'Stop tracking camera' : 'Track this agent (orbit its files)',
+          onClick: () =>
+            tracking ? s().stopTrackingAgent(false) : void s().startTrackingAgent(agent.id, ws.id),
         })
+        if (tracking)
+          items.push({
+            label: 'Stop tracking & clear orbit',
+            onClick: () => s().stopTrackingAgent(true),
+          })
+      }
       items.push({
         label: 'Open transcript',
         onClick: () =>
@@ -1022,6 +1026,7 @@ export function Canvas() {
             {tabWidgets.map((el) => (
               <WidgetFrame
                 key={el.id}
+                workspaceId={tab.id}
                 el={el}
                 selected={isActiveTab && selSet.has(el.id)}
                 onStartMove={isActiveTab ? onWidgetStartMove : NOOP}

@@ -1,10 +1,12 @@
 // ccanvas desktop backend (pty + native dialogs/fs)
 mod files;
 mod media;
+mod pi_runtime;
 mod pty;
 mod usage;
 mod watch;
 
+use pi_runtime::PiRuntimeManager;
 use pty::PtyManager;
 use watch::WatchManager;
 
@@ -13,6 +15,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(PtyManager::default())
+        .manage(PiRuntimeManager::default())
         .manage(WatchManager::default())
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -47,6 +50,14 @@ pub fn run() {
             pty::pty_resize,
             pty::pty_detach,
             pty::pty_kill,
+            pi_runtime::pi_open,
+            pi_runtime::pi_start,
+            pi_runtime::pi_write,
+            pi_runtime::pi_resize,
+            pi_runtime::pi_detach,
+            pi_runtime::pi_control,
+            pi_runtime::pi_kill,
+            pi_runtime::pi_kill_current,
             watch::watch_start,
             watch::watch_stop,
         ])

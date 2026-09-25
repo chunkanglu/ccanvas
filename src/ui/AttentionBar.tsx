@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useStore, selectActive } from '../store/workspace'
-import { useAgents, sendTo } from '../lib/agents'
+import { agentRuntimeId, useAgents, sendTo } from '../lib/agents'
 import type { WidgetElement } from '../lib/types'
 
 // Global "agents need you" inbox. Lists agents currently waiting on input
@@ -19,7 +19,7 @@ export function AttentionBar() {
 
   const waiting = ws.elements.filter(
     (e): e is WidgetElement =>
-      e.type === 'widget' && e.kind === 'agent' && status[e.id] === 'waiting',
+      e.type === 'widget' && e.kind === 'agent' && status[agentRuntimeId(ws.id, e)] === 'waiting',
   )
   if (waiting.length === 0) return null
 
@@ -56,7 +56,7 @@ export function AttentionBar() {
               <button
                 className="attn__yes"
                 title="Send Enter"
-                onClick={() => sendTo(el.id, '\r')}
+                onClick={() => sendTo(agentRuntimeId(ws.id, el), '\r')}
               >
                 ⏎
               </button>

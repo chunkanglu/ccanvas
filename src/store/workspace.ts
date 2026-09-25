@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type {
+  AgentHarness,
   Camera,
   CanvasElement,
   FrameElement,
@@ -38,6 +39,7 @@ import {
 import { resetFlowState } from '../lib/flow'
 import { startTracking, stopTracking } from '../lib/tracker'
 import { killPty } from '../lib/terminal'
+import { killManagedPi } from '../lib/pi-runtime'
 
 let zCounter = 1
 const nextZ = () => zCounter++
@@ -157,6 +159,7 @@ export type AgentWizardCtx = {
   x: number
   y: number
   editId?: string // editing an existing agent rather than creating
+  harness?: AgentHarness
   model?: string
   cwd?: string
   worktree?: string
@@ -190,6 +193,8 @@ export type Store = {
   followAgent: boolean
   /** the agent currently being followed by the tracking camera, if any */
   trackingAgentId: string | null
+  /** workspace owning the tracked agent; widget IDs are portable, not global */
+  trackingAgentTabId: string | null
   /** active alignment guide lines (world coords), shown while moving/resizing */
   snapGuides: { vx: number | null; hy: number | null } | null
   /** frame-by-frame presentation mode */
@@ -226,6 +231,8 @@ export type Store = {
   addElements: (els: CanvasElement[]) => void
   updateElement: (id: string, patch: Partial<CanvasElement>) => void
   mutateElement: (id: string, fn: (el: CanvasElement) => void) => void
+  /** Runtime callback variant that targets its owning tab even while hidden. */
+  mutateElementInTab: (tabId: string, id: string, fn: (el: CanvasElement) => void) => void
   removeElements: (ids: string[]) => void
   /** spawn a widget centred at (x,y); returns the new element id */
   spawnWidget: (
@@ -291,7 +298,7 @@ export type Store = {
 
   // ----- agent cameras -----
   setFollowAgent: (on: boolean) => void
-  startTrackingAgent: (id: string) => Promise<void>
+  startTrackingAgent: (id: string, tabId?: string) => Promise<void>
   stopTrackingAgent: (cleanup: boolean) => void
 
   // ----- agent wizard -----
@@ -340,6 +347,7 @@ export const useStore = create<Store>((set, get) => ({
   searchOpen: false,
   followAgent: false,
   trackingAgentId: null,
+  trackingAgentTabId: null,
   snapGuides: null,
   presenting: false,
   flowsEnabled: true,
@@ -434,12 +442,15 @@ export const useStore = create<Store>((set, get) => ({
     // closing a tab discards its widgets for good — end their shells too
     const tab = get().tabs.find((t) => t.id === id)
     const trackId = get().trackingAgentId
+    const trackTabId = get().trackingAgentTabId
     if (tab) {
-      if (trackId && tab.elements.some((e) => e.id === trackId))
+      if (trackId && trackTabId === tab.id && tab.elements.some((e) => e.id === trackId))
         get().stopTrackingAgent(false)
       for (const e of tab.elements)
-        if (e.type === 'widget' && (e.kind === 'terminal' || e.kind === 'agent'))
-          killPty(e.id)
+        if (e.type === 'widget' && (e.kind === 'terminal' || e.kind === 'agent')) {
+          if (e.kind === 'agent' && e.harness === 'pi') killManagedPi(`${tab.id}:${e.id}`)
+          else killPty(`${tab.id}:${e.id}`)
+        }
     }
     set((s) => {
       const idx = s.tabs.findIndex((t) => t.id === id)
@@ -612,12 +623,30 @@ export const useStore = create<Store>((set, get) => ({
       })),
     ),
 
+  mutateElementInTab: (tabId, id, fn) =>
+    set((s) => ({
+      tabs: s.tabs.map((ws) => {
+        if (ws.id !== tabId) return ws
+        return {
+          ...ws,
+          elements: ws.elements.map((e) => {
+            if (e.id !== id) return e
+            const copy = { ...e } as CanvasElement
+            fn(copy)
+            return copy
+          }),
+          dirty: true,
+        }
+      }),
+    })),
+
   removeElements: (ids) => {
     const set_ = new Set(ids)
+    const ws = get().active()
     // tracking ends if the tracked agent itself is being removed
     const trackId = get().trackingAgentId
-    if (trackId && set_.has(trackId)) get().stopTrackingAgent(false)
-    const ws = get().active()
+    const trackTabId = get().trackingAgentTabId
+    if (trackId && trackTabId === ws?.id && set_.has(trackId)) get().stopTrackingAgent(false)
     // also remove any label-box parts (frame + name) attached to a removed widget
     if (ws)
       for (const e of ws.elements)
@@ -631,8 +660,10 @@ export const useStore = create<Store>((set, get) => ({
           set_.has(e.id) &&
           e.type === 'widget' &&
           (e.kind === 'terminal' || e.kind === 'agent')
-        )
-          killPty(e.id)
+        ) {
+          if (e.kind === 'agent' && e.harness === 'pi') killManagedPi(`${ws.id}:${e.id}`)
+          else killPty(`${ws.id}:${e.id}`)
+        }
     set((s) =>
       patchActive(s, (w) => ({
         ...w,
@@ -1216,13 +1247,14 @@ export const useStore = create<Store>((set, get) => ({
 
   // ---------- agent cameras ----------
   setFollowAgent: (on) => set({ followAgent: on }),
-  startTrackingAgent: async (id) => {
-    const ok = await startTracking(id)
-    if (ok) set({ trackingAgentId: id })
+  startTrackingAgent: async (id, tabId) => {
+    const targetTabId = tabId ?? get().activeTabId ?? undefined
+    const ok = await startTracking(id, targetTabId)
+    if (ok) set({ trackingAgentId: id, trackingAgentTabId: targetTabId ?? null })
   },
   stopTrackingAgent: (cleanup) => {
     stopTracking(cleanup)
-    set({ trackingAgentId: null })
+    set({ trackingAgentId: null, trackingAgentTabId: null })
   },
 
   // ---------- agent wizard ----------

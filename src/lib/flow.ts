@@ -9,7 +9,7 @@
 
 import type { ArrowElement, CanvasElement, WidgetElement, Workspace } from './types'
 import { useStore } from '../store/workspace'
-import { sendTo, isLive, stripAnsi, notify } from './agents'
+import { agentRuntimeId, sendPrompt, isLive, stripAnsi, notify } from './agents'
 import { readTranscript, extractLastAssistant } from './transcript'
 
 // Heuristic keyword sets for the success/failure conditions. An agent that
@@ -126,6 +126,7 @@ const lastFiredTurn = new Map<string, number>()
 // by target widget id → (arrow id → the source agent's piped output captured
 // when that edge was satisfied).
 const satisfied = new Map<string, Map<string, string>>()
+const runtimeFlowId = (workspaceId: string, elementId: string) => `${workspaceId}:${elementId}`
 
 // Runaway guard: if flows fire faster than this within the window, pause them
 // and tell the user, so a cyclic graph can't spam agents forever.
@@ -189,19 +190,18 @@ function flowEdges(
  * ingests every line as one block (a bare \n would submit the first line); a
  * trailing \r then submits.
  */
-function deliver(targetId: string, prompt: string, title: string, tries = 0) {
+function deliver(runtimeId: string, widgetId: string, prompt: string, title: string, tries = 0) {
   const text = prompt.replace(/\r/g, '').replace(/\n+$/, '')
-  const payload = text.includes('\n') ? `\x1b[200~${text}\x1b[201~\r` : `${text}\r`
-  if (sendTo(targetId, payload)) return
+  if (sendPrompt(runtimeId, text)) return
   if (tries >= 4) {
     notify('ccanvas flow stalled', `${title} isn't running — open it to receive its prompt.`)
     return
   }
-  if (!isLive(targetId)) {
+  if (!isLive(runtimeId)) {
     // nudge the widget to mount/connect, then retry
-    useStore.getState().setActiveWidget(targetId)
+    useStore.getState().setActiveWidget(widgetId)
   }
-  setTimeout(() => deliver(targetId, prompt, title, tries + 1), 1300)
+  setTimeout(() => deliver(runtimeId, widgetId, prompt, title, tries + 1), 1300)
 }
 
 /**
@@ -239,12 +239,13 @@ function fireTarget(
     .filter(Boolean)
     .join('\n\n')
   // re-arm: consume the satisfied set so the next run needs fresh completions
-  satisfied.delete(targetId)
+  satisfied.delete(runtimeFlowId(ws.id, targetId))
   if (!prompt) {
     notify('ccanvas flow', `${title} triggered, but there was no output or prompt to send.`)
     return
   }
-  deliver(targetId, prompt, title)
+  if (target?.type !== 'widget') return
+  deliver(agentRuntimeId(ws.id, target), targetId, prompt, title)
 }
 
 // ---------- entry point ----------
@@ -254,9 +255,16 @@ function fireTarget(
  * `turnIndex` is the agent's monotonic turn counter (for per-turn dedupe);
  * `tail` is its recent terminal output.
  */
-export async function onAgentTurnComplete(sourceId: string, turnIndex: number, tail: string) {
+export async function onAgentTurnComplete(
+  sourceId: string,
+  turnIndex: number,
+  tail: string,
+  workspaceId?: string,
+) {
   if (!useStore.getState().flowsEnabled) return
-  const ws = tabContaining(sourceId)
+  const ws = workspaceId
+    ? useStore.getState().tabs.find((tab) => tab.id === workspaceId) ?? null
+    : tabContaining(sourceId)
   if (!ws) return
 
   const outgoing = flowEdges(ws, { from: sourceId })
@@ -272,12 +280,14 @@ export async function onAgentTurnComplete(sourceId: string, turnIndex: number, t
 
   const touchedTargets = new Set<string>()
   for (const edge of outgoing) {
-    if (lastFiredTurn.get(edge.id) === turnIndex) continue // already fired this turn
+    const edgeRuntimeId = runtimeFlowId(ws.id, edge.id)
+    if (lastFiredTurn.get(edgeRuntimeId) === turnIndex) continue // already fired this turn
     if (!evaluateCondition(edge, tail)) continue
-    lastFiredTurn.set(edge.id, turnIndex)
+    lastFiredTurn.set(edgeRuntimeId, turnIndex)
     const targetId = edge.to!.id
-    let set = satisfied.get(targetId)
-    if (!set) satisfied.set(targetId, (set = new Map()))
+    const targetRuntimeId = runtimeFlowId(ws.id, targetId)
+    let set = satisfied.get(targetRuntimeId)
+    if (!set) satisfied.set(targetRuntimeId, (set = new Map()))
     set.set(edge.id, output)
     touchedTargets.add(targetId)
   }
@@ -285,7 +295,7 @@ export async function onAgentTurnComplete(sourceId: string, turnIndex: number, t
   // decide which touched targets should now fire
   for (const targetId of touchedTargets) {
     const incoming = flowEdges(ws, { to: targetId })
-    const sat = satisfied.get(targetId)
+    const sat = satisfied.get(runtimeFlowId(ws.id, targetId))
     if (!sat || !incoming.length) continue
     const satEdges = incoming.filter((e) => sat.has(e.id))
     // OR: any satisfied edge marked 'any' fires immediately

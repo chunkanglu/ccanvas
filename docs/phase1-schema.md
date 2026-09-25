@@ -6,8 +6,9 @@ Phase 1 is complete and manually accepted. It adds `.ccnvs` v2, explicit
 `harness: "claude" | "pi"`, separate durable session ID/file fields, Pi model
 provider/thinking/tool-profile configuration, and a transport-neutral controller
 contract. Existing v1 agents migrate to Claude without changing their session IDs.
-New agents still default to Claude; a loaded Pi record shows an unavailable-state
-message and cannot accidentally launch Claude before the phase 2 runtime exists.
+New agents still default to Claude. At the phase 1 boundary, a loaded Pi record
+showed a safe unavailable state instead of launching Claude; phase 2 subsequently
+replaced that placeholder with the opt-in managed runtime.
 
 ## Schema and migration
 

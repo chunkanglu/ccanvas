@@ -4,11 +4,11 @@ import { screenToWorld } from '../lib/geometry'
 import { elementBounds } from '../lib/geometry'
 import { downloadPng, downloadSvg } from '../lib/export'
 import { runCommand, joinPath } from '../lib/backend'
-import { sendPrompt, isLive } from '../lib/agents'
-import type { WidgetKind } from '../lib/types'
+import { agentRuntimeId, sendPrompt, isLive } from '../lib/agents'
+import type { WidgetElement, WidgetKind } from '../lib/types'
 
 /** The focused/selected agent or terminal a prompt insert should target. */
-function injectTargetId(): string | null {
+function injectTarget(): { widgetId: string; runtimeId: string } | null {
   const s = useStore.getState()
   const ws = selectActive(s)
   const byId = new Map(ws.elements.map((e) => [e.id, e]))
@@ -16,8 +16,11 @@ function injectTargetId(): string | null {
     const el = id ? byId.get(id) : undefined
     return !!el && el.type === 'widget' && (el.kind === 'agent' || el.kind === 'terminal')
   }
-  if (ok(s.activeWidgetId)) return s.activeWidgetId
-  return s.selection.find((id) => ok(id)) ?? null
+  const widgetId = ok(s.activeWidgetId)
+    ? s.activeWidgetId!
+    : s.selection.find((id) => ok(id))
+  if (!widgetId) return null
+  return { widgetId, runtimeId: agentRuntimeId(ws.id, byId.get(widgetId)! as WidgetElement) }
 }
 
 const CHROME_H = 82
@@ -275,10 +278,10 @@ export function CommandPalette() {
         hint: 'agent',
         group: 'Prompts',
         run: () => {
-          const id = injectTargetId()
-          if (id && isLive(id)) {
-            sendPrompt(id, p.text, false)
-            s.setActiveWidget(id)
+          const target = injectTarget()
+          if (target && isLive(target.runtimeId)) {
+            sendPrompt(target.runtimeId, p.text, false)
+            s.setActiveWidget(target.widgetId)
           } else {
             s.setOpenPanel('prompts')
           }

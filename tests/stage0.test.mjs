@@ -128,8 +128,8 @@ test('v2 keeps Pi harness, exact session identity and model provider separate', 
   assert.equal(restored.elements[0].provider, 'anthropic')
   assert.throws(() => persistence.fromFile({ ...fixture, version: 99 }, 'bad'), /Unsupported/)
   assert.match(await text('src/widgets/TerminalBody.tsx'), /harness === 'pi'/)
-  assert.match(await text('src/widgets/TerminalBody.tsx'), /This agent was not started/)
-  assert.match(await text('src/widgets/WidgetFrame.tsx'), /\(el\.harness \?\? 'claude'\) === 'claude'/)
+  assert.match(await text('src/widgets/TerminalBody.tsx'), /return <PiTerminalBody/)
+  assert.match(await text('src/ui/AgentWizard.tsx'), /Harness cannot change after creation/)
 })
 
 test('checkpoint metadata/refs and usage preference are fork-scoped', async () => {

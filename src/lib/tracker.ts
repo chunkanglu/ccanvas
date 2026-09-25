@@ -19,6 +19,7 @@ import { notify } from './agents'
 
 type Session = {
   agentId: string
+  workspaceId: string
   /** transcript lines already consumed */
   cursor: number
   /** absolute file path → the widget id showing it */
@@ -99,7 +100,7 @@ function frameOrbit() {
   if (!session) return
   const s = useStore.getState()
   const ws = s.active()
-  if (!ws) return
+  if (!ws || ws.id !== session.workspaceId) return
   const ids = new Set<string>([session.agentId, ...session.openedByPath.values()])
   const els = ws.elements.filter((e) => ids.has(e.id))
   const b = boundsOfMany(els)
@@ -117,7 +118,7 @@ async function tick() {
   if (!session || session.stopped) return
   const s = useStore.getState()
   const ws = s.active()
-  if (!ws) return
+  if (!ws || ws.id !== session.workspaceId) return
   // only act while the agent's own tab is showing, so we never spawn satellites
   // onto the wrong canvas or fight a tab the user switched to
   const agent = ws.elements.find(
@@ -178,17 +179,23 @@ async function tick() {
     session.openedByPath.set(abs, wid)
     added = true
   }
-  if (added && useStore.getState().trackingAgentId === session.agentId) frameOrbit()
+  if (
+    added
+    && useStore.getState().trackingAgentId === session.agentId
+    && useStore.getState().trackingAgentTabId === session.workspaceId
+  ) frameOrbit()
 }
 
 /**
  * Begin tracking an agent. Switches to the agent's tab (so satellites land on
  * the right canvas) and frames it. Returns false if the agent can't be found.
  */
-export async function startTracking(agentId: string): Promise<boolean> {
+export async function startTracking(agentId: string, workspaceId?: string): Promise<boolean> {
   stopTracking(false)
   const s = useStore.getState()
-  const tab = s.tabs.find((t) => t.elements.some((e) => e.id === agentId))
+  const tab = workspaceId
+    ? s.tabs.find((candidate) => candidate.id === workspaceId)
+    : s.tabs.find((candidate) => candidate.elements.some((element) => element.id === agentId))
   if (!tab) return false
   const agent = tab.elements.find((e) => e.id === agentId)
   if (!agent || agent.type !== 'widget' || agent.kind !== 'agent') return false
@@ -202,6 +209,7 @@ export async function startTracking(agentId: string): Promise<boolean> {
   const timer = setInterval(() => void tick(), POLL_MS)
   session = {
     agentId,
+    workspaceId: tab.id,
     cursor,
     openedByPath: new Map(),
     placed: 0,
@@ -220,12 +228,13 @@ export function stopTracking(cleanup: boolean) {
   session.stopped = true
   session.dispose?.()
   const agentId = session.agentId
+  const workspaceId = session.workspaceId
   session = null
   if (!cleanup) return
   const s = useStore.getState()
   // the orbit lives on the agent's tab — switch there so removeElements (which
   // acts on the active tab) actually clears it, even when stopped from elsewhere
-  const tab = s.tabs.find((t) => t.elements.some((e) => e.trackOf === agentId))
+  const tab = s.tabs.find((candidate) => candidate.id === workspaceId)
   if (!tab) return
   if (s.activeTabId !== tab.id) s.switchTab(tab.id)
   const ids = tab.elements.filter((e) => e.trackOf === agentId).map((e) => e.id)

@@ -41,9 +41,11 @@ npm run server   # the optional fork PTY/file backend on 127.0.0.1:7532
 ```bash
 npm run test:stage0 # fork isolation and schema-migration checks; no Pi/model calls
 npm run test:phase1 # controller identity/generation checks; no Pi/model calls
+npm run test:phase2 # companion protocol/extension unit tests; no Pi/model calls
 npm run build      # type-check + bundle the web app into dist/
 npm run test:app-install # installer/build-wrapper tests; no real Applications writes
 npm run probe:terminal # optional POSIX/zsh line-editing regression; no model calls
+npm run probe:pi:companion # optional actual-Pi synthetic companion probe; no model/tools
 npm run app:install # macOS: unsigned debug build + install to ~/Applications
 npm run app:build   # release build; macOS also installs after success
 npm run app:build -- --debug # faster rebuild + install
