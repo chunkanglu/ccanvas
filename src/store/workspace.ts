@@ -665,8 +665,16 @@ export const useStore = create<Store>((set, get) => ({
       ...(dir && (kind === 'files' || kind === 'diff' || kind === 'log')
         ? { path: dir }
         : {}),
-      // agents get a stable claude session id so reopening can --resume it
-      ...(kind === 'agent' ? { sessionId: crypto.randomUUID() } : {}),
+      // Keep the current default Claude-only until later parity gates. Pi
+      // widgets may be represented now, but no managed Pi runtime exists yet.
+      ...(kind === 'agent'
+        ? {
+            harness: init?.harness ?? 'claude',
+            ...((init?.harness ?? 'claude') === 'claude'
+              ? { sessionId: crypto.randomUUID() }
+              : {}),
+          }
+        : {}),
       ...init,
     }
     get().beginHistory()
@@ -894,9 +902,10 @@ export const useStore = create<Store>((set, get) => ({
         if (!groupMap.has(e.groupId)) groupMap.set(e.groupId, newId())
         ne.groupId = groupMap.get(e.groupId)
       }
-      // fresh agent sessions for pasted agents
+      // Pasted agents are new runtime identities, never aliases of the source.
       if (ne.type === 'widget' && ne.kind === 'agent') {
-        ne.sessionId = crypto.randomUUID()
+        delete ne.sessionFile
+        ne.sessionId = ne.harness === 'pi' ? undefined : crypto.randomUUID()
         ne.agentStarted = false
       }
       return ne
@@ -1120,7 +1129,11 @@ export const useStore = create<Store>((set, get) => ({
         note: w.note,
         path: w.path,
         cmd: w.cmd,
+        harness: w.harness,
+        provider: w.provider,
         model: w.model,
+        thinkingLevel: w.thinkingLevel,
+        toolProfile: w.toolProfile,
         agentPrompt: w.agentPrompt,
         skipPermissions: w.skipPermissions,
       })),
@@ -1152,11 +1165,17 @@ export const useStore = create<Store>((set, get) => ({
       ...(w.note != null ? { note: w.note } : {}),
       ...(w.path != null ? { path: w.path } : dir ? { path: dir } : {}),
       ...(w.cmd != null ? { cmd: w.cmd } : {}),
+      ...(w.kind === 'agent' ? { harness: w.harness ?? 'claude' } : {}),
+      ...(w.provider != null ? { provider: w.provider } : {}),
       ...(w.model != null ? { model: w.model } : {}),
+      ...(w.thinkingLevel != null ? { thinkingLevel: w.thinkingLevel } : {}),
+      ...(w.toolProfile != null ? { toolProfile: w.toolProfile } : {}),
       ...(w.agentPrompt != null ? { agentPrompt: w.agentPrompt } : {}),
       ...(w.skipPermissions ? { skipPermissions: true } : {}),
       ...(dir ? { cwd: dir } : {}),
-      ...(w.kind === 'agent' ? { sessionId: crypto.randomUUID() } : {}),
+      ...(w.kind === 'agent' && (w.harness ?? 'claude') === 'claude'
+        ? { sessionId: crypto.randomUUID() }
+        : {}),
     }))
     get().beginHistory()
     get().addElements(els)

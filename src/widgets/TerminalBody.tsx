@@ -26,19 +26,32 @@ type Mode = 'connecting' | 'pty' | 'local'
 // zoomed in so the terminal stays crisp under the world's CSS transform
 const BASE_FONT = 12.5
 
-// Terminal widget. Prefers a real shell — the in-process PTY under Tauri, or the
-// optional WebSocket bridge in the browser. Falls back to a tiny in-browser
-// shell when neither is available. Agent widgets auto-launch `claude`.
-export function TerminalBody({
-  el,
-  active,
-  visible = true,
-}: {
+type TerminalBodyProps = {
   el: WidgetElement
   active: boolean
   /** is the tab this terminal lives on currently shown? */
   visible?: boolean
-}) {
+}
+
+// Phase 1 can load Pi agent records safely, but must not reinterpret one as a
+// Claude process or ordinary shell before the managed runtime exists.
+export function TerminalBody(props: TerminalBodyProps) {
+  if (props.el.kind === 'agent' && props.el.harness === 'pi') {
+    return (
+      <div className="term">
+        <div className="term__offline">
+          Managed Pi runtime is planned for phase 2. This agent was not started.
+        </div>
+      </div>
+    )
+  }
+  return <PtyTerminalBody {...props} />
+}
+
+// Terminal widget. Prefers a real shell — the in-process PTY under Tauri, or the
+// optional WebSocket bridge in the browser. Falls back to a tiny in-browser
+// shell when neither is available. Claude agent widgets auto-launch `claude`.
+function PtyTerminalBody({ el, active, visible = true }: TerminalBodyProps) {
   const hostRef = useRef<HTMLDivElement>(null)
   const innerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)

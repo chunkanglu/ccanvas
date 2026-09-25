@@ -2,8 +2,8 @@
 
 Personal fork of [DevoidSloth/ccanvas](https://github.com/DevoidSloth/ccanvas),
 maintained at [chunkanglu/ccanvas](https://github.com/chunkanglu/ccanvas).
-**Phase 0 isolation and compatibility acceptance is complete. Agent widgets still
-launch Claude; the managed Pi integration begins with the phase 1 schema work.**
+**Phases 0–1 isolation, compatibility, and harness-neutral schema work are complete.
+Agent widgets still launch Claude; the managed Pi runtime begins in phase 2.**
 
 - App identity: **ccanvas Pi**, `io.github.chunkanglu.ccanvas-pi`.
 - Development UI: `127.0.0.1:5174`; preview: `127.0.0.1:4174`; optional local
@@ -15,6 +15,7 @@ launch Claude; the managed Pi integration begins with the phase 1 schema work.**
   opt-in, no-LLM RPC startup probe. `npm run probe:pi:tui` checks native custom UI
   and synthetic session lifecycle. Both load normal extensions (startup hooks run).
 - [Phase 0 evidence and acceptance](docs/pi-integration-status.md) ·
+  [Phase 1 schema/controller](docs/phase1-schema.md) ·
   [Installed-extension compatibility findings](docs/pi-compatibility.md) ·
   [Approved TUI direction and probe](docs/pi-tui-probe.md).
 - Fork releases are manual `pi-v*` draft prereleases; upstream `v*` tags do not

@@ -330,7 +330,7 @@ export function WidgetFrame({
         {el.kind === 'agent' && <AgentMeter id={el.id} />}
         <span className="widget__bar-spacer" />
         <div className="widget__actions">
-          {el.kind === 'agent' && (
+          {el.kind === 'agent' && (el.harness ?? 'claude') === 'claude' && (
             <button
               className="widget__btn"
               title="Agent settings"

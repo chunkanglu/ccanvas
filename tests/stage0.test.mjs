@@ -67,7 +67,7 @@ test('upstream autosave, templates and prompts are neither restored nor overwrit
   assert.equal(persistence.loadSession(), null)
   assert.deepEqual(persistence.loadTemplates(), [])
   assert.deepEqual(persistence.loadPrompts(), [])
-  const session = { tabs: [{ id: 'fork-tab' }], activeTabId: 'fork-tab' }
+  const session = { tabs: [{ id: 'fork-tab', elements: [] }], activeTabId: 'fork-tab' }
   persistence.saveSession(session)
   persistence.saveTemplates([{ id: 'fork-template', name: 'Example', widgets: [] }])
   persistence.savePrompts([{ id: 'fork-prompt', name: 'Example', text: 'Hello' }])
@@ -75,18 +75,61 @@ test('upstream autosave, templates and prompts are neither restored nor overwrit
   assert.equal(persistence.loadTemplates()[0].id, 'fork-template')
   assert.equal(persistence.loadPrompts()[0].id, 'fork-prompt')
   for (const [key, value] of Object.entries(upstream)) assert.equal(storage.getItem(key), value)
-  for (const name of ['session:v1', 'templates:v1', 'prompts:v1']) {
+  for (const name of ['session:v2', 'templates:v2', 'prompts:v1']) {
     assert.notEqual(storage.getItem(`${fork.storageNamespace}:${name}`), null)
   }
   delete globalThis.localStorage
 })
 
-test('stage 0 preserves v1 canvas semantics rather than migrating agents', async () => {
+test('v1 canvases migrate agents to Claude without changing session/link semantics', async () => {
   const fixture = await json('tests/fixtures/workspace-v1.ccnvs')
   const restored = persistence.fromFile(fixture, 'fallback')
-  assert.deepEqual(persistence.toFile(restored), fixture)
+  const saved = persistence.toFile(restored)
+  assert.equal(saved.version, 2)
+  assert.equal(restored.elements[0].harness, 'claude')
   assert.equal(restored.elements[0].sessionId, fixture.elements[0].sessionId)
   assert.equal(restored.elements[1].agentId, fixture.elements[0].id)
+  assert.equal(saved.elements[0].harness, 'claude')
+})
+
+test('fork-local v1 session and templates migrate once to explicit Claude harness', () => {
+  const storage = new MemoryStorage()
+  globalThis.localStorage = storage
+  const workspace = {
+    id: 'workspace', name: 'Legacy', camera: { x: 0, y: 0, zoom: 1 }, createdAt: 1,
+    elements: [{ id: 'agent', type: 'widget', kind: 'agent', x: 0, y: 0, w: 1, h: 1, z: 0, title: 'old', sessionId: 'kept' }],
+  }
+  const legacySession = JSON.stringify({ tabs: [workspace], activeTabId: 'workspace' })
+  const legacyTemplates = JSON.stringify([{ id: 'template', name: 'Legacy', widgets: [{ kind: 'agent', dx: 0, dy: 0, w: 1, h: 1 }] }])
+  storage.setItem(`${fork.storageNamespace}:session:v1`, legacySession)
+  storage.setItem(`${fork.storageNamespace}:templates:v1`, legacyTemplates)
+  const session = persistence.loadSession()
+  const templates = persistence.loadTemplates()
+  assert.equal(session.tabs[0].elements[0].harness, 'claude')
+  assert.equal(session.tabs[0].elements[0].sessionId, 'kept')
+  assert.equal(templates[0].widgets[0].harness, 'claude')
+  assert.equal(JSON.parse(storage.getItem(`${fork.storageNamespace}:session:v2`)).tabs[0].elements[0].harness, 'claude')
+  assert.equal(JSON.parse(storage.getItem(`${fork.storageNamespace}:templates:v2`))[0].widgets[0].harness, 'claude')
+  assert.equal(storage.getItem(`${fork.storageNamespace}:session:v1`), legacySession)
+  assert.equal(storage.getItem(`${fork.storageNamespace}:templates:v1`), legacyTemplates)
+  delete globalThis.localStorage
+})
+
+test('v2 keeps Pi harness, exact session identity and model provider separate', async () => {
+  const fixture = await json('tests/fixtures/workspace-v1.ccnvs')
+  fixture.version = 2
+  Object.assign(fixture.elements[0], {
+    harness: 'pi', sessionId: 'pi-session-id', sessionFile: '/synthetic/session.jsonl',
+    provider: 'anthropic', model: 'claude-sonnet-4', thinkingLevel: 'high', toolProfile: 'dev',
+  })
+  const restored = persistence.fromFile(fixture, 'fallback')
+  assert.deepEqual(persistence.toFile(restored).elements[0], fixture.elements[0])
+  assert.equal(restored.elements[0].harness, 'pi')
+  assert.equal(restored.elements[0].provider, 'anthropic')
+  assert.throws(() => persistence.fromFile({ ...fixture, version: 99 }, 'bad'), /Unsupported/)
+  assert.match(await text('src/widgets/TerminalBody.tsx'), /harness === 'pi'/)
+  assert.match(await text('src/widgets/TerminalBody.tsx'), /This agent was not started/)
+  assert.match(await text('src/widgets/WidgetFrame.tsx'), /\(el\.harness \?\? 'claude'\) === 'claude'/)
 })
 
 test('checkpoint metadata/refs and usage preference are fork-scoped', async () => {

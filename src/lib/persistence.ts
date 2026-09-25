@@ -1,11 +1,13 @@
-import type { CcnvsFile, Prompt, Template, Workspace } from './types'
-import { DEFAULT_CAMERA } from './types'
+import type { CanvasElement, CcnvsFile, CcnvsFileV2, Prompt, Template, Workspace } from './types'
+import { CCNVS_VERSION, DEFAULT_CAMERA } from './types'
 import { newId } from './id'
 
 import { storageKey } from './fork'
 
-const SESSION_KEY = storageKey('session:v1')
-const TEMPLATES_KEY = storageKey('templates:v1')
+const SESSION_KEY = storageKey('session:v2')
+const LEGACY_SESSION_KEY = storageKey('session:v1')
+const TEMPLATES_KEY = storageKey('templates:v2')
+const LEGACY_TEMPLATES_KEY = storageKey('templates:v1')
 const PROMPTS_KEY = storageKey('prompts:v1')
 
 // File System Access API handles are not serializable; keep them in memory
@@ -15,21 +17,57 @@ const handles = new Map<string, FileSystemFileHandle>()
 export const hasFsAccess = () =>
   typeof (window as any).showOpenFilePicker === 'function'
 
-export function toFile(ws: Workspace): CcnvsFile {
+function normalizeElements(elements: unknown): CanvasElement[] {
+  if (!Array.isArray(elements)) return []
+  return elements.map((element) => {
+    if (
+      element && typeof element === 'object'
+      && (element as CanvasElement).type === 'widget'
+      && (element as CanvasElement & { kind?: string }).kind === 'agent'
+    ) {
+      const agent = element as CanvasElement & { harness?: unknown }
+      // Fail closed to the existing Claude behavior. A typo must never opt an
+      // old canvas into a different executable or permission model.
+      const harness = agent.harness === 'pi' ? 'pi' : 'claude'
+      return { ...agent, harness } as CanvasElement
+    }
+    return element as CanvasElement
+  })
+}
+
+function normalizeWorkspace(ws: Workspace): Workspace {
+  return { ...ws, elements: normalizeElements(ws.elements) }
+}
+
+function normalizeTemplate(template: Template): Template {
+  return {
+    ...template,
+    widgets: Array.isArray(template.widgets)
+      ? template.widgets.map(widget => widget.kind === 'agent'
+        ? { ...widget, harness: widget.harness === 'pi' ? 'pi' : 'claude' }
+        : widget)
+      : [],
+  }
+}
+
+export function toFile(ws: Workspace): CcnvsFileV2 {
   return {
     format: 'ccnvs',
-    version: 1,
+    version: CCNVS_VERSION,
     name: ws.name,
     camera: ws.camera,
-    elements: ws.elements,
+    elements: normalizeElements(ws.elements),
   }
 }
 
 export function fromFile(data: CcnvsFile, name: string): Workspace {
+  if (!data || data.format !== 'ccnvs' || (data.version !== 1 && data.version !== CCNVS_VERSION)) {
+    throw new Error('Unsupported ccanvas workspace format or version')
+  }
   return {
     id: newId(),
     name: data.name || name,
-    elements: Array.isArray(data.elements) ? data.elements : [],
+    elements: normalizeElements(data.elements),
     camera: data.camera ?? { ...DEFAULT_CAMERA },
     createdAt: Date.now(),
     dirty: false,
@@ -132,7 +170,10 @@ type SessionShape = {
 
 export function saveSession(s: SessionShape) {
   try {
-    localStorage.setItem(SESSION_KEY, JSON.stringify(s))
+    localStorage.setItem(SESSION_KEY, JSON.stringify({
+      ...s,
+      tabs: s.tabs.map(normalizeWorkspace),
+    }))
   } catch {
     /* quota / private mode: ignore */
   }
@@ -140,11 +181,15 @@ export function saveSession(s: SessionShape) {
 
 export function loadSession(): SessionShape | null {
   try {
-    const raw = localStorage.getItem(SESSION_KEY)
+    const current = localStorage.getItem(SESSION_KEY)
+    const legacy = current ? null : localStorage.getItem(LEGACY_SESSION_KEY)
+    const raw = current ?? legacy
     if (!raw) return null
     const parsed = JSON.parse(raw) as SessionShape
     if (!parsed.tabs?.length) return null
-    return parsed
+    const normalized = { ...parsed, tabs: parsed.tabs.map(normalizeWorkspace) }
+    if (legacy) saveSession(normalized)
+    return normalized
   } catch {
     return null
   }
@@ -154,10 +199,15 @@ export function loadSession(): SessionShape | null {
 
 export function loadTemplates(): Template[] {
   try {
-    const raw = localStorage.getItem(TEMPLATES_KEY)
+    const current = localStorage.getItem(TEMPLATES_KEY)
+    const legacy = current ? null : localStorage.getItem(LEGACY_TEMPLATES_KEY)
+    const raw = current ?? legacy
     if (!raw) return []
     const parsed = JSON.parse(raw)
-    return Array.isArray(parsed) ? (parsed as Template[]) : []
+    if (!Array.isArray(parsed)) return []
+    const normalized = (parsed as Template[]).map(normalizeTemplate)
+    if (legacy) saveTemplates(normalized)
+    return normalized
   } catch {
     return []
   }
@@ -165,7 +215,7 @@ export function loadTemplates(): Template[] {
 
 export function saveTemplates(templates: Template[]) {
   try {
-    localStorage.setItem(TEMPLATES_KEY, JSON.stringify(templates))
+    localStorage.setItem(TEMPLATES_KEY, JSON.stringify(templates.map(normalizeTemplate)))
   } catch {
     /* quota / private mode: ignore */
   }

@@ -14,6 +14,11 @@ export type Tool =
   | 'eraser'
   | 'frame'
 
+export type AgentHarness = 'claude' | 'pi'
+
+/** Pi reasoning levels. Claude keeps using its existing model defaults. */
+export type AgentThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+
 export type WidgetKind =
   | 'terminal'
   | 'agent'
@@ -180,14 +185,23 @@ export type WidgetElement = Base & {
   path?: string // file/folder a files/editor/doc/log widget points at
   cmd?: string // command for diff/log widgets (defaults per kind)
   color?: string // per-widget accent override (agents); drives /color too
-  /** claude session id for agent widgets (persisted so reopening resumes it) */
+  /** Agent harness. Missing values are migrated to Claude for v1 compatibility. */
+  harness?: AgentHarness
+  /** Harness session identity; never use the widget id as a substitute. */
   sessionId?: string
-  /** set true after claude has been launched once for this agent's session,
+  /** Exact Pi session JSONL path. Distinct from sessionId and widget identity. */
+  sessionFile?: string
+  /** set true after Claude has been launched once for this agent's session,
    *  so subsequent opens use `claude --resume <sessionId>` */
   agentStarted?: boolean
-  // agent launch config (agent widgets)
-  model?: string // e.g. "opus", "sonnet"; appended as --model
+  // portable agent launch config (agent widgets)
+  /** LLM provider within the harness; this is not the harness discriminator. */
+  provider?: string
+  model?: string // Claude alias or Pi model id; interpreted by the harness
+  thinkingLevel?: AgentThinkingLevel
+  toolProfile?: string
   agentPrompt?: string // initial prompt typed after launch
+  /** Claude-only legacy permission switch. Never translate this into Pi trust/approval. */
   skipPermissions?: boolean // pass --dangerously-skip-permissions
   worktree?: string // git worktree branch this agent is isolated in
   // sql widget — both safe to persist (a key *name* and the query text; the
@@ -222,14 +236,27 @@ export type Workspace = {
   dirty?: boolean
 }
 
-/** On-disk shape of a .ccnvs file */
-export type CcnvsFile = {
+export const CCNVS_VERSION = 2 as const
+
+/** Legacy files omit `harness`; migration treats every existing agent as Claude. */
+export type CcnvsFileV1 = {
   format: 'ccnvs'
   version: 1
   name: string
   camera: Camera
   elements: CanvasElement[]
 }
+
+/** Current on-disk shape. Agent elements are normalized with an explicit harness. */
+export type CcnvsFileV2 = {
+  format: 'ccnvs'
+  version: typeof CCNVS_VERSION
+  name: string
+  camera: Camera
+  elements: CanvasElement[]
+}
+
+export type CcnvsFile = CcnvsFileV1 | CcnvsFileV2
 
 /** A reusable layout of widgets spawned together onto a fresh canvas. */
 export type Template = {
@@ -247,7 +274,11 @@ export type Template = {
     note?: string
     path?: string
     cmd?: string
+    harness?: AgentHarness
+    provider?: string
     model?: string
+    thinkingLevel?: AgentThinkingLevel
+    toolProfile?: string
     agentPrompt?: string
     skipPermissions?: boolean
   }>

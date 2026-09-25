@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "test:stage0": "node --test tests/stage0.test.mjs tests/stage0-probe.test.mjs",
+    "test:phase1": "node --test tests/phase1.test.mjs",
     "test:app-install": "node --test tests/app-install.test.mjs",
     "probe:pi": "python3 scripts/probe-pi-rpc.py",
     "probe:pi:tui": "python3 scripts/probe-pi-tui.py",
