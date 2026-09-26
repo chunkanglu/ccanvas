@@ -25,9 +25,51 @@ export type AgentMetrics = {
   costUsd?: number
 }
 
+/** Pi-reported session accounting for one attached runtime. */
+export type PiSessionUsage = {
+  sessionId?: string
+  tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number }
+  costUsd: number
+  assistantMessages: number
+  toolCalls: number
+  context?: { tokens: number | null; window: number; percent: number | null }
+}
+
+export type PiUsageAggregate = {
+  sessions: number
+  tokens: number
+  costUsd: number
+  /** Attached sessions whose current context occupancy Pi reports as unknown. */
+  unknownContext: number
+}
+
+/**
+ * Count attached Pi sessions once even if several widgets view the same
+ * session. Runtimes without a session id are distinct because their identity is
+ * not yet known.
+ */
+export function aggregatePiUsage(usage: Record<string, PiSessionUsage>): PiUsageAggregate {
+  const sessions = new Map<string, PiSessionUsage>()
+  for (const [runtimeId, item] of Object.entries(usage)) {
+    const key = item.sessionId ? `session:${item.sessionId}` : `runtime:${runtimeId}`
+    const prior = sessions.get(key)
+    if (!prior || item.tokens.total >= prior.tokens.total) sessions.set(key, item)
+  }
+  let tokens = 0
+  let costUsd = 0
+  let unknownContext = 0
+  for (const item of sessions.values()) {
+    tokens += item.tokens.total
+    costUsd += item.costUsd
+    if (!item.context || item.context.tokens === null) unknownContext += 1
+  }
+  return { sessions: sessions.size, tokens, costUsd, unknownContext }
+}
+
 type StatusState = {
   status: Record<string, AgentStatus>
   metrics: Record<string, AgentMetrics>
+  piUsage: Record<string, PiSessionUsage>
   /** the most recent meaningful line of each agent's output (for the roster) */
   lastLine: Record<string, string>
   setStatus: (id: string, s: AgentStatus) => void
@@ -39,12 +81,14 @@ type StatusState = {
   setCost: (id: string, usd: number) => void
   /** stash the latest output line shown next to the agent in the roster */
   setLastLine: (id: string, line: string) => void
+  setPiUsage: (id: string, usage: PiSessionUsage) => void
   clear: (id: string) => void
 }
 
 export const useAgents = create<StatusState>((set) => ({
   status: {},
   metrics: {},
+  piUsage: {},
   lastLine: {},
   setStatus: (id, s) =>
     set((st) =>
@@ -87,20 +131,24 @@ export const useAgents = create<StatusState>((set) => ({
       if (m.costUsd === usd) return st
       return { metrics: { ...st.metrics, [id]: { ...m, costUsd: usd } } }
     }),
+  setPiUsage: (id, usage) =>
+    set((st) => ({ piUsage: { ...st.piUsage, [id]: usage } })),
   setLastLine: (id, line) =>
     set((st) =>
       st.lastLine[id] === line ? st : { lastLine: { ...st.lastLine, [id]: line } },
     ),
   clear: (id) =>
     set((st) => {
-      if (!(id in st.status) && !(id in st.metrics) && !(id in st.lastLine)) return st
+      if (!(id in st.status) && !(id in st.metrics) && !(id in st.lastLine) && !(id in st.piUsage)) return st
       const status = { ...st.status }
       const metrics = { ...st.metrics }
       const lastLine = { ...st.lastLine }
+      const piUsage = { ...st.piUsage }
       delete status[id]
       delete metrics[id]
       delete lastLine[id]
-      return { status, metrics, lastLine }
+      delete piUsage[id]
+      return { status, metrics, lastLine, piUsage }
     }),
 }))
 

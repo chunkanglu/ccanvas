@@ -63,7 +63,8 @@ type QuickCommand = {
 }
 
 const QUICK_COMMANDS: QuickCommand[] = [
-  { name: 'agent', target: 'agent', desc: 'Claude agent', aliases: ['claude', 'ai'] },
+  { name: 'agent', target: 'agent', desc: 'Pi agent', aliases: ['pi', 'ai'] },
+  { name: 'claude', target: 'agent', desc: 'Claude agent (legacy)' },
   { name: 'term', target: 'terminal', desc: 'shell terminal', aliases: ['terminal', 'sh', 'shell'] },
   { name: 'files', target: 'files', desc: 'file tree', aliases: ['tree', 'explorer'] },
   { name: 'diff', target: 'diff', desc: 'git diff', aliases: ['git'] },
@@ -286,17 +287,30 @@ export function Canvas() {
       const trackingState = useStore.getState()
       const tracking = trackingState.trackingAgentId === agent.id
         && trackingState.trackingAgentTabId === ws.id
+      items.push({
+        label: tracking ? 'Stop tracking camera' : 'Track this agent (orbit its files)',
+        onClick: () =>
+          tracking ? s().stopTrackingAgent(false) : void s().startTrackingAgent(agent.id, ws.id),
+      })
+      if (tracking)
+        items.push({
+          label: 'Stop tracking & clear orbit',
+          onClick: () => s().stopTrackingAgent(true),
+        })
       if (agent.harness !== 'pi') {
         items.push({
-          label: tracking ? 'Stop tracking camera' : 'Track this agent (orbit its files)',
-          onClick: () =>
-            tracking ? s().stopTrackingAgent(false) : void s().startTrackingAgent(agent.id, ws.id),
+          label: 'Create Pi agent from this configuration',
+          onClick: () => s().openAgentWizard({
+            x: agent.x + agent.w + 360,
+            y: agent.y + agent.h / 2,
+            harness: 'pi',
+            title: `${agent.title || 'agent'} (Pi)`,
+            color: agent.color,
+            cwd: agent.cwd,
+            worktree: agent.worktree,
+            agentPrompt: agent.agentPrompt,
+          }),
         })
-        if (tracking)
-          items.push({
-            label: 'Stop tracking & clear orbit',
-            onClick: () => s().stopTrackingAgent(true),
-          })
       }
       items.push({
         label: 'Open transcript',
@@ -881,7 +895,12 @@ export function Canvas() {
     const target = COMMAND_MAP[head.toLowerCase()]
     if (!target) return // unknown command → do nothing
     if (target === 'agent') {
-      openAgentWizard({ x: world.x, y: world.y, agentPrompt: rest || undefined })
+      openAgentWizard({
+        x: world.x,
+        y: world.y,
+        harness: head.toLowerCase() === 'claude' ? 'claude' : 'pi',
+        agentPrompt: rest || undefined,
+      })
       return
     }
     const init: Partial<WidgetElement> = {}

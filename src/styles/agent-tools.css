@@ -678,3 +678,20 @@
   text-overflow: ellipsis;
   max-width: 250px;
 }
+
+/* ---------- harness identity ---------- */
+.agent-harness {
+  flex-shrink: 0;
+  padding: 1px 5px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1.35;
+  text-transform: uppercase;
+}
+.agent-harness--pi {
+  border-color: var(--accent-line);
+  color: var(--accent-bright);
+}

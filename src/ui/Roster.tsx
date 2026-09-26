@@ -125,15 +125,18 @@ export function Roster() {
               <div className="roster__main">
                 <div className="roster__top">
                   <span className="roster__name">{row.agent.title}</span>
+                  <span className={`agent-harness agent-harness--${row.agent.harness === 'pi' ? 'pi' : 'claude'}`}>
+                    {row.agent.harness === 'pi' ? 'pi' : 'claude'}
+                  </span>
                   {row.tab.id !== activeTabId && (
                     <span className="roster__tab">{row.tab.name}</span>
                   )}
                   {m && (m.runs > 0 || m.turns > 0 || m.costUsd != null) && (
                     <span
                       className="roster__meter"
-                      title={`${m.runs} settled runs · ${m.turns} model turns · ${m.failedRuns} failed · ${m.abortedRuns} aborted`}
+                      title={`${m.runs} settled runs · ${m.turns} model turns · ${m.failedRuns} failed · ${m.abortedRuns} aborted${row.agent.harness === 'pi' ? ' · Pi-estimated session cost' : ''}`}
                     >
-                      {m.runs}r/{m.turns}t{m.costUsd != null ? ` · $${m.costUsd.toFixed(2)}` : ''}
+                      {m.runs}r/{m.turns}t{m.costUsd != null ? ` · ${row.agent.harness === 'pi' ? '~' : ''}$${m.costUsd.toFixed(2)}` : ''}
                     </span>
                   )}
                 </div>

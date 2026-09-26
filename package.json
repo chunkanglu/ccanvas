@@ -9,6 +9,7 @@
     "test:phase2": "node --test tests/phase2-protocol.test.mjs tests/phase2-companion.test.mjs tests/phase2-runtime.test.mjs tests/phase2-agent-runtime.test.mjs",
     "test:phase3": "node --test tests/phase3-agent-ux.test.mjs",
     "test:phase4": "node --test tests/phase4-flow-tracking.test.mjs",
+    "test:phase5": "node --test tests/phase5-pi-first.test.mjs",
     "test:app-install": "node --test tests/app-install.test.mjs",
     "probe:pi": "python3 scripts/probe-pi-rpc.py",
     "probe:pi:tui": "python3 scripts/probe-pi-tui.py",

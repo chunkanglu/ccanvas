@@ -17,7 +17,7 @@ export function Welcome() {
       { x: window.innerWidth / 2, y: (window.innerHeight - CHROME_H) / 2 },
       cam,
     )
-    openAgentWizard({ x: world.x, y: world.y })
+    openAgentWizard({ x: world.x, y: world.y, harness: 'pi' })
   }
 
   return (
@@ -30,7 +30,7 @@ export function Welcome() {
           The canvas for coding with <b>agents</b>
         </h1>
         <p className="welcome__sub">
-          Spawn terminals, Claude agents, and live previews on an infinite
+          Spawn terminals, Pi agents, and live previews on an infinite
           surface, then sketch the architecture around them. Every tab is a
           self-contained <span className="kbd">.ccnvs</span> workspace.
         </p>
@@ -38,7 +38,7 @@ export function Welcome() {
         <div style={{ marginBottom: 24, display: 'flex', gap: 8, justifyContent: 'center' }}>
           {ws.dir ? (
             <button className="tb-btn tb-btn--accent" onClick={spawnFirst}>
-              ✦ Spawn an agent in <span className="kbd">{ws.dir.split(/[\\/]/).pop()}</span>
+              ✦ Spawn a Pi agent in <span className="kbd">{ws.dir.split(/[\\/]/).pop()}</span>
             </button>
           ) : (
             <button className="tb-btn tb-btn--accent" onClick={() => void setActiveDir()}>

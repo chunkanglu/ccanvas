@@ -58,6 +58,7 @@ pub fn run() {
             pi_runtime::pi_control,
             pi_runtime::pi_kill,
             pi_runtime::pi_kill_current,
+            pi_runtime::pi_launcher_status,
             watch::watch_start,
             watch::watch_stop,
         ])

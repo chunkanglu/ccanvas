@@ -114,7 +114,13 @@ test('companion authenticates, replays events, scopes controls and preserves nat
     hasPendingMessages: () => pendingMessages,
     abort: () => { calls.abort++ },
     shutdown: () => { calls.shutdown++ },
+    getContextUsage: () => ({ tokens: null, contextWindow: 1000, percent: null }),
     sessionManager: {
+      getEntries: () => [
+        { type: 'message', message: { role: 'assistant', content: [{ type: 'toolCall' }], usage: { input: 10, output: 5, cacheRead: 1, cacheWrite: 2, cost: { total: 0.12 } } } },
+        { type: 'message', message: { role: 'toolResult', usage: { input: 3, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0.03 } } } },
+        { type: 'compaction', usage: { input: 4, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0.05 } } },
+      ],
       getSessionId: () => 'pi-session-id',
       getSessionFile: () => '/synthetic/session.jsonl',
       getLeafId: () => 'leaf-1',
@@ -142,6 +148,15 @@ test('companion authenticates, replays events, scopes controls and preserves nat
   )
   assert.deepEqual(catalog.event.models.map(model => model.id), ['synthetic-model', 'alternate-model'])
   assert.deepEqual(catalog.event.tools.map(tool => [tool.name, tool.active]), [['read', true], ['edit', false]])
+  const stats = await waitFor(
+    () => records.find(frame => frame.type === 'event' && frame.event.type === 'stats'),
+    'Pi session stats',
+  )
+  assert.equal(stats.event.sessionId, 'pi-session-id')
+  assert.deepEqual(stats.event.tokens, { input: 17, output: 6, cacheRead: 1, cacheWrite: 2, total: 26 })
+  assert.equal(Math.round(stats.event.costUsd * 100), 20)
+  assert.equal(stats.event.toolCalls, 1)
+  assert.deepEqual(stats.event.context, { tokens: null, window: 1000, percent: null })
 
   handlers.get('before_agent_start')({}, ctx)
   handlers.get('agent_start')({}, ctx)

@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type {
   AgentHarness,
+  AgentThinkingLevel,
   Camera,
   CanvasElement,
   FrameElement,
@@ -97,7 +98,7 @@ const WIDGET_SIZE: Record<WidgetKind, { w: number; h: number }> = {
 }
 const WIDGET_TITLE: Record<WidgetKind, string> = {
   terminal: 'terminal',
-  agent: 'claude agent',
+  agent: 'agent',
   web: 'web preview',
   note: 'note',
   files: 'files',
@@ -115,7 +116,7 @@ const WIDGET_TITLE: Record<WidgetKind, string> = {
   transcript: 'transcript',
   video: 'video',
   mediainfo: 'media info',
-  claude: 'claude workspace',
+  claude: 'knowledge graph',
 }
 
 /** Expand a set of ids to include every sibling sharing a groupId. */
@@ -160,9 +161,14 @@ export type AgentWizardCtx = {
   y: number
   editId?: string // editing an existing agent rather than creating
   harness?: AgentHarness
+  provider?: string
   model?: string
+  thinkingLevel?: AgentThinkingLevel
+  color?: string
   cwd?: string
   worktree?: string
+  /** Repository in which the wizard should create a new worktree before spawning. */
+  worktreeRepo?: string
   title?: string
   agentPrompt?: string
 }
@@ -376,9 +382,9 @@ export const useStore = create<Store>((set, get) => ({
     }))
   },
 
-  // A special tab that hosts a single, locked "claude" widget filling the
-  // canvas — the Claude knowledge-graph node map (see ClaudeBody, which renders
-  // the bundled claude-graph.html). Reuses the active canvas's folder as cwd.
+  // A special tab that hosts a single locked knowledge-graph widget. The legacy
+  // widget kind remains `claude` for document compatibility; new graphs use an
+  // explicit user-selected Markdown source (see KnowledgeGraphBody).
   openClaudeWorkspace: () => {
     // if one is already open, just switch to it
     const existing = get().tabs.find((t) =>
@@ -389,7 +395,7 @@ export const useStore = create<Store>((set, get) => ({
       return
     }
     const dir = get().active()?.dir
-    const ws = makeWorkspace('claude', dir)
+    const ws = makeWorkspace('knowledge', dir)
     const { w, h } = WIDGET_SIZE.claude
     const id = newId()
     const el: WidgetElement = {
@@ -403,6 +409,7 @@ export const useStore = create<Store>((set, get) => ({
       z: nextZ(),
       title: WIDGET_TITLE.claude,
       locked: true,
+      graphSource: 'markdown',
       ...(dir ? { cwd: dir } : {}),
     }
     ws.elements = [el]
@@ -698,12 +705,12 @@ export const useStore = create<Store>((set, get) => ({
       ...(dir && (kind === 'files' || kind === 'diff' || kind === 'log')
         ? { path: dir }
         : {}),
-      // Keep the current default Claude-only until later parity gates. Pi
-      // widgets may be represented now, but no managed Pi runtime exists yet.
+      // New agents are Pi-first. Existing/migrated/template agents that omit a
+      // harness remain Claude through their own load/apply paths.
       ...(kind === 'agent'
         ? {
-            harness: init?.harness ?? 'claude',
-            ...((init?.harness ?? 'claude') === 'claude'
+            harness: init?.harness ?? 'pi',
+            ...((init?.harness ?? 'pi') === 'claude'
               ? { sessionId: crypto.randomUUID() }
               : {}),
           }

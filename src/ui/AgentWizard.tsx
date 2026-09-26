@@ -1,15 +1,38 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useStore, selectActive } from '../store/workspace'
 import type { AgentWizardCtx } from '../store/workspace'
 import { AGENT_COLORS, claudeColorName } from '../lib/types'
 import type { AgentHarness, AgentThinkingLevel, WidgetElement } from '../lib/types'
 import { agentRuntimeId, renameSession, sendTo, isLive } from '../lib/agents'
 import { IconAgent } from './icons'
+import { joinPath, runCommand } from '../lib/backend'
+import {
+  getPiLauncherStatus,
+  loadPiLaunchProfiles,
+  piLaunchProfileLabel,
+  PI_SETUP_GUIDANCE,
+  rememberPiLaunchProfile,
+  type PiLauncherStatus,
+  type PiLaunchProfile,
+} from '../lib/pi-launch'
 
 const MODELS = ['default', 'opus', 'sonnet', 'haiku']
 type ThinkingChoice = 'default' | AgentThinkingLevel
 const THINKING: ThinkingChoice[] = ['default', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
 const DEFAULT_COLOR = AGENT_COLORS[0].hex
+
+/** Conservative subset of git ref rules; git still performs final validation. */
+export function validWorktreeBranch(branch: string): boolean {
+  return /^[A-Za-z0-9._/-]{1,200}$/.test(branch)
+    && !branch.startsWith('-')
+    && !branch.startsWith('/')
+    && !branch.endsWith('/')
+    && !branch.endsWith('.')
+    && !branch.endsWith('.lock')
+    && !branch.includes('..')
+    && !branch.includes('//')
+    && !branch.split('/').some(part => !part || part.startsWith('.'))
+}
 
 // Modal shown when creating (or editing) an agent — set its name, colour,
 // model, permission mode, and an optional first prompt before it launches.
@@ -22,6 +45,7 @@ export function AgentWizard() {
 
 function Wizard({ ctx }: { ctx: AgentWizardCtx }) {
   const close = useStore((s) => s.closeAgentWizard)
+  const openAgentWizard = useStore((s) => s.openAgentWizard)
   const spawnWidget = useStore((s) => s.spawnWidget)
   const mutateElement = useStore((s) => s.mutateElement)
   const beginHistory = useStore((s) => s.beginHistory)
@@ -32,12 +56,12 @@ function Wizard({ ctx }: { ctx: AgentWizardCtx }) {
     : undefined
   const editing = !!existing
 
-  const [harness, setHarness] = useState<AgentHarness>(existing?.harness ?? ctx.harness ?? 'claude')
+  const [harness, setHarness] = useState<AgentHarness>(existing?.harness ?? ctx.harness ?? 'pi')
   const [name, setName] = useState(existing?.title ?? ctx.title ?? '')
-  const [color, setColor] = useState(existing?.color ?? DEFAULT_COLOR)
-  const [provider, setProvider] = useState(existing?.provider ?? '')
+  const [color, setColor] = useState(existing?.color ?? ctx.color ?? DEFAULT_COLOR)
+  const [provider, setProvider] = useState(existing?.provider ?? ctx.provider ?? '')
   const [model, setModel] = useState(existing?.model ?? ctx.model ?? (harness === 'claude' ? 'default' : ''))
-  const [thinking, setThinking] = useState<ThinkingChoice>(existing?.thinkingLevel ?? 'default')
+  const [thinking, setThinking] = useState<ThinkingChoice>(existing?.thinkingLevel ?? ctx.thinkingLevel ?? 'default')
   const [skip, setSkip] = useState(existing?.skipPermissions ?? false)
   const [prompt, setPrompt] = useState(
     (existing?.harness === 'pi' ? existing.promptDraft : existing?.agentPrompt)
@@ -45,12 +69,78 @@ function Wizard({ ctx }: { ctx: AgentWizardCtx }) {
       ?? '',
   )
 
-  const folder = ctx.worktree
+  const [profiles] = useState<PiLaunchProfile[]>(() => loadPiLaunchProfiles())
+  const [launcher, setLauncher] = useState<PiLauncherStatus>()
+  useEffect(() => {
+    if (harness !== 'pi' || editing) return
+    let alive = true
+    void getPiLauncherStatus(true).then(status => {
+      if (alive) setLauncher(status)
+    })
+    return () => { alive = false }
+  }, [editing, harness])
+
+  const applyProfile = (profile: PiLaunchProfile) => {
+    setProvider(profile.provider ?? '')
+    setModel(profile.model ?? '')
+    setThinking(profile.thinkingLevel ?? 'default')
+  }
+
+  // Copy only nonsecret launch context. Transcript and permission state stay Claude-owned.
+  const createPiFromClaude = () => {
+    if (!existing || existing.harness === 'pi') return
+    close()
+    openAgentWizard({
+      x: existing.x + existing.w + 360,
+      y: existing.y + existing.h / 2,
+      harness: 'pi',
+      title: `${existing.title || 'agent'} (Pi)`,
+      color: existing.color,
+      cwd: existing.cwd,
+      worktree: existing.worktree,
+      agentPrompt: existing.agentPrompt,
+    })
+  }
+
+  const [branch, setBranch] = useState('')
+  const [creating, setCreating] = useState(false)
+  const [createError, setCreateError] = useState<string>()
+  const worktreeMode = !editing && !!ctx.worktreeRepo && !ctx.worktree
+
+  const folder = worktreeMode
+    ? `new worktree · ${branch.trim() || 'branch'}`
+    : ctx.worktree
     ? `worktree · ${ctx.worktree}`
     : (ctx.cwd ?? ws.dir)?.replace(/[\\/]+$/, '').split(/[\\/]/).pop()
 
-  const submit = () => {
-    const title = name.trim() || `${harness} agent`
+  const submit = async () => {
+    if (creating) return
+    let launchCwd = ctx.cwd
+    let launchWorktree = ctx.worktree
+    const cleanBranch = branch.trim()
+    if (worktreeMode) {
+      if (!validWorktreeBranch(cleanBranch)) {
+        setCreateError('Enter a valid new branch name.')
+        return
+      }
+      setCreating(true)
+      setCreateError(undefined)
+      const repo = ctx.worktreeRepo!
+      const worktreePath = joinPath(joinPath(repo, '.ccanvas-worktrees'), cleanBranch)
+      const result = await runCommand(
+        'git',
+        ['-C', repo, 'worktree', 'add', worktreePath, '-b', cleanBranch],
+        repo,
+      )
+      if (!result || result.code !== 0) {
+        setCreating(false)
+        setCreateError(`git worktree failed: ${(result?.stderr || result?.stdout || 'backend offline').trim().slice(0, 500)}`)
+        return
+      }
+      launchCwd = worktreePath
+      launchWorktree = cleanBranch
+    }
+    const title = name.trim() || (launchWorktree ? `agent · ${launchWorktree}` : `${harness} agent`)
     const cleanModel = model === 'default' || !model.trim() ? undefined : model.trim()
     if (editing && existing) {
       beginHistory()
@@ -79,6 +169,13 @@ function Wizard({ ctx }: { ctx: AgentWizardCtx }) {
         if (harness === 'claude') sendTo(runtimeId, `/color ${claudeColorName(color)}\r`)
       }
     } else {
+      if (harness === 'pi') {
+        rememberPiLaunchProfile({
+          provider: provider.trim() || undefined,
+          model: cleanModel,
+          thinkingLevel: thinking === 'default' ? undefined : thinking,
+        })
+      }
       spawnWidget('agent', ctx.x, ctx.y, {
         title,
         color,
@@ -89,8 +186,8 @@ function Wizard({ ctx }: { ctx: AgentWizardCtx }) {
         skipPermissions: harness === 'claude' ? skip : false,
         agentPrompt: harness === 'claude' ? prompt.trim() || undefined : undefined,
         promptDraft: harness === 'pi' ? prompt || undefined : undefined,
-        ...(ctx.cwd ? { cwd: ctx.cwd } : {}),
-        ...(ctx.worktree ? { worktree: ctx.worktree } : {}),
+        ...(launchCwd ? { cwd: launchCwd } : {}),
+        ...(launchWorktree ? { worktree: launchWorktree } : {}),
       })
     }
     close()
@@ -104,7 +201,7 @@ function Wizard({ ctx }: { ctx: AgentWizardCtx }) {
         onKeyDown={(e) => {
           e.stopPropagation()
           if (e.key === 'Escape') close()
-          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submit()
+          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void submit()
         }}
       >
         <div className="wiz__head">
@@ -115,9 +212,28 @@ function Wizard({ ctx }: { ctx: AgentWizardCtx }) {
           {folder && <span className="wiz__folder">{folder}</span>}
         </div>
 
+        {worktreeMode && (
+          <>
+            <label className="wiz__label">New worktree branch</label>
+            <input
+              className="wiz__input"
+              autoFocus
+              placeholder="feature/my-change"
+              value={branch}
+              spellCheck={false}
+              disabled={creating}
+              onChange={(e) => {
+                setBranch(e.target.value)
+                setCreateError(undefined)
+              }}
+            />
+            <span className="wiz__hint">Created under .ccanvas-worktrees when you create the agent.</span>
+          </>
+        )}
+
         <label className="wiz__label">Harness</label>
         <div className="wiz__seg">
-          {(['claude', 'pi'] as AgentHarness[]).map((value) => (
+          {(['pi', 'claude'] as AgentHarness[]).map((value) => (
             <button
               key={value}
               className={`wiz__seg-btn${harness === value ? ' wiz__seg-btn--active' : ''}`}
@@ -129,7 +245,7 @@ function Wizard({ ctx }: { ctx: AgentWizardCtx }) {
                 setSkip(false)
               }}
             >
-              {value}
+              {value === 'claude' ? 'claude (legacy)' : value}
             </button>
           ))}
         </div>
@@ -137,13 +253,13 @@ function Wizard({ ctx }: { ctx: AgentWizardCtx }) {
         <label className="wiz__label">Name</label>
         <input
           className="wiz__input"
-          autoFocus
-          placeholder={`${harness} agent`}
+          autoFocus={!worktreeMode}
+          placeholder={worktreeMode && branch.trim() ? `agent · ${branch.trim()}` : `${harness} agent`}
           value={name}
           spellCheck={false}
           onChange={(e) => setName(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter') submit()
+            if (e.key === 'Enter') void submit()
           }}
         />
 
@@ -191,6 +307,30 @@ function Wizard({ ctx }: { ctx: AgentWizardCtx }) {
           </>
         ) : (
           <>
+            {!editing && launcher && !launcher.available && (
+              <div className="wiz__warning" role="alert">
+                <b>Pi launcher unavailable</b>
+                <span>{launcher.error}</span>
+                <span>{PI_SETUP_GUIDANCE}</span>
+              </div>
+            )}
+            {!editing && profiles.length > 0 && (
+              <>
+                <label className="wiz__label">Recent Pi launch profiles</label>
+                <div className="wiz__profiles">
+                  {profiles.map(profile => (
+                    <button
+                      key={piLaunchProfileLabel(profile)}
+                      className="wiz__profile"
+                      title="Use this nonsecret provider/model/thinking default"
+                      onClick={() => applyProfile(profile)}
+                    >
+                      {piLaunchProfileLabel(profile)}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
             <label className="wiz__label">Provider (optional)</label>
             <input
               className="wiz__input"
@@ -234,12 +374,24 @@ function Wizard({ ctx }: { ctx: AgentWizardCtx }) {
           </>
         )}
 
+        {editing && existing?.harness !== 'pi' && (
+          <button
+            className="wiz__handoff"
+            title="Open a new Pi agent with this title, color, folder and prompt as a draft. No transcript or permission setting is migrated."
+            onClick={createPiFromClaude}
+          >
+            Create Pi agent from this configuration
+          </button>
+        )}
+
+        {createError && <div className="wiz__warning" role="alert">{createError}</div>}
+
         <div className="wiz__actions">
           <button className="wiz__btn" onClick={close}>
             Cancel
           </button>
-          <button className="wiz__btn wiz__btn--primary" onClick={submit}>
-            {editing ? 'Save' : 'Create agent'}
+          <button className="wiz__btn wiz__btn--primary" disabled={creating} onClick={() => void submit()}>
+            {editing ? 'Save' : creating ? 'Creating worktree…' : 'Create agent'}
           </button>
         </div>
         <span className="wiz__hint">⌘↵ to {editing ? 'save' : 'create'} · esc to cancel</span>

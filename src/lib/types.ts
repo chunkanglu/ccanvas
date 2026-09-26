@@ -217,6 +217,11 @@ export type WidgetElement = Base & {
   query?: string // last SQL text, so reopening the canvas restores it
   /** transcript widget: the agent widget whose conversation it mirrors */
   agentId?: string
+  /**
+   * Knowledge-graph source. Missing values preserve the legacy Claude project
+   * memory source for existing widgets; new graphs use an explicit folder.
+   */
+  graphSource?: 'claude-memory' | 'markdown'
 }
 
 export type CanvasElement =

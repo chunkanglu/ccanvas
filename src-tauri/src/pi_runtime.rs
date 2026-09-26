@@ -49,6 +49,7 @@ struct CompanionState {
     lifecycle_snapshot: Option<Value>,
     catalog_snapshot: Option<Value>,
     queue_snapshot: Option<Value>,
+    stats_snapshot: Option<Value>,
     recovering: bool,
 }
 
@@ -316,6 +317,52 @@ fn resolve_program(program: &str) -> Result<PathBuf, String> {
         .ok_or_else(|| {
             format!("Pi executable '{program}' was not found; no installation was attempted")
         })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PiLauncherStatus {
+    available: bool,
+    program: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+fn launcher_status() -> PiLauncherStatus {
+    let config = match fork_config() {
+        Ok(config) => config,
+        Err(error) => {
+            return PiLauncherStatus {
+                available: false,
+                program: String::new(),
+                path: None,
+                error: Some(error),
+            }
+        }
+    };
+    let program = config.pi_launcher.program;
+    match resolve_program(&program) {
+        Ok(path) => PiLauncherStatus {
+            available: true,
+            program,
+            path: Some(path.to_string_lossy().into_owned()),
+            error: None,
+        },
+        Err(error) => PiLauncherStatus {
+            available: false,
+            program,
+            path: None,
+            error: Some(error),
+        },
+    }
+}
+
+/// Resolve the configured launcher without executing, installing, or trusting anything.
+#[tauri::command]
+pub fn pi_launcher_status() -> PiLauncherStatus {
+    launcher_status()
 }
 
 fn companion_extension(app: &AppHandle) -> Result<PathBuf, String> {
@@ -724,6 +771,39 @@ fn validate_event_payload(event: &Value) -> Result<(), String> {
                 return Err("Invalid companion queue event".into());
             }
         }
+        "stats" => {
+            let count = |value: Option<&Value>| {
+                value
+                    .and_then(Value::as_f64)
+                    .is_some_and(|number| number.is_finite() && number >= 0.0)
+            };
+            let tokens = event.get("tokens").and_then(Value::as_object);
+            if event.get("sessionId").is_some_and(|value| {
+                !value
+                    .as_str()
+                    .is_some_and(|value| valid_identifier(value, 512))
+            }) || !tokens.is_some_and(|tokens| {
+                ["input", "output", "cacheRead", "cacheWrite", "total"]
+                    .iter()
+                    .all(|key| count(tokens.get(*key)))
+            }) || !count(event.get("costUsd"))
+                || safe_integer(event, "assistantMessages", 0).is_none()
+                || safe_integer(event, "toolCalls", 0).is_none()
+                || event.get("context").is_some_and(|context| {
+                    !context.is_object()
+                        || !(context.get("tokens").is_some_and(Value::is_null)
+                            || count(context.get("tokens")))
+                        || !context
+                            .get("window")
+                            .and_then(Value::as_f64)
+                            .is_some_and(|window| window.is_finite() && window > 0.0)
+                        || !(context.get("percent").is_some_and(Value::is_null)
+                            || count(context.get("percent")))
+                })
+            {
+                return Err("Invalid companion stats event".into());
+            }
+        }
         "catalog" => {
             let models = event
                 .get("models")
@@ -946,6 +1026,7 @@ fn process_frame(
                     (Some("session"), _) => state.session_snapshot = Some(frame.clone()),
                     (Some("catalog"), _) => state.catalog_snapshot = Some(frame.clone()),
                     (Some("queue"), _) => state.queue_snapshot = Some(frame.clone()),
+                    (Some("stats"), _) => state.stats_snapshot = Some(frame.clone()),
                     (Some("lifecycle"), Some("agent_start" | "agent_settled")) => {
                         state.lifecycle_snapshot = Some(frame.clone());
                     }
@@ -1398,6 +1479,7 @@ pub fn pi_start(
         companion.catalog_snapshot.clone(),
         companion.lifecycle_snapshot.clone(),
         companion.queue_snapshot.clone(),
+        companion.stats_snapshot.clone(),
     ]
     .into_iter()
     .flatten()
@@ -1760,6 +1842,17 @@ mod tests {
     }
 
     #[test]
+    fn launcher_resolution_reports_missing_programs_without_execution() {
+        let missing = resolve_program("/definitely/missing/ccanvas-pi").unwrap_err();
+        assert!(missing.contains("unavailable"));
+        assert!(resolve_program("bad\nprogram").is_err());
+        let status = launcher_status();
+        assert_eq!(status.program, fork_config().unwrap().pi_launcher.program);
+        assert_eq!(status.available, status.path.is_some());
+        assert_eq!(status.available, status.error.is_none());
+    }
+
+    #[test]
     fn inherited_environment_is_rebuilt_without_parent_runtime_identity() {
         let mut command = CommandBuilder::new("pi");
         command.env("CMUX_WORKSPACE_ID", "leak");
@@ -1809,6 +1902,20 @@ mod tests {
         assert!(
             decode_host_frame(&serde_json::to_vec(&relative_tool).unwrap(), "widget", 2).is_err()
         );
+
+        let stats = json!({
+            "v": 1, "type": "event", "widgetId": "widget", "generation": 2, "seq": 4,
+            "event": {
+                "type": "stats", "sessionId": "session",
+                "tokens": { "input": 1, "output": 2, "cacheRead": 3, "cacheWrite": 4, "total": 10 },
+                "costUsd": 0.25, "assistantMessages": 1, "toolCalls": 0,
+                "context": { "tokens": null, "window": 1000, "percent": null },
+            },
+        });
+        assert!(decode_host_frame(&serde_json::to_vec(&stats).unwrap(), "widget", 2).is_ok());
+        let mut bad_stats = stats;
+        bad_stats["event"]["costUsd"] = json!(-1);
+        assert!(decode_host_frame(&serde_json::to_vec(&bad_stats).unwrap(), "widget", 2).is_err());
 
         let lifecycle = json!({
             "v": 1, "type": "event", "widgetId": "widget", "generation": 2, "seq": 2,
