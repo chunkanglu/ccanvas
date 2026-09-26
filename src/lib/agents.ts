@@ -15,8 +15,15 @@ export type AgentStatus =
   | 'working' // actively streaming output
   | 'waiting' // appears to be asking a question / permission prompt
 
-/** Observable activity metrics per agent (turns + active time + scraped cost). */
-export type AgentMetrics = { turns: number; activeMs: number; costUsd?: number }
+/** Model turns and settled agent runs are distinct authoritative counters. */
+export type AgentMetrics = {
+  turns: number
+  runs: number
+  failedRuns: number
+  abortedRuns: number
+  activeMs: number
+  costUsd?: number
+}
 
 type StatusState = {
   status: Record<string, AgentStatus>
@@ -24,8 +31,10 @@ type StatusState = {
   /** the most recent meaningful line of each agent's output (for the roster) */
   lastLine: Record<string, string>
   setStatus: (id: string, s: AgentStatus) => void
-  /** record one working→idle turn that lasted `ms` */
+  /** Claude compatibility: one quiet-screen turn is also one completed run. */
   recordTurn: (id: string, ms: number) => void
+  recordModelTurn: (id: string) => void
+  recordRun: (id: string, ms: number, outcome: 'completed' | 'failed' | 'aborted') => void
   /** latest cost (USD) scraped from `/cost` output */
   setCost: (id: string, usd: number) => void
   /** stash the latest output line shown next to the agent in the roster */
@@ -43,17 +52,38 @@ export const useAgents = create<StatusState>((set) => ({
     ),
   recordTurn: (id, ms) =>
     set((st) => {
-      const m = st.metrics[id] ?? { turns: 0, activeMs: 0 }
+      const m = st.metrics[id] ?? { turns: 0, runs: 0, failedRuns: 0, abortedRuns: 0, activeMs: 0 }
       return {
         metrics: {
           ...st.metrics,
-          [id]: { ...m, turns: m.turns + 1, activeMs: m.activeMs + ms },
+          [id]: { ...m, turns: m.turns + 1, runs: m.runs + 1, activeMs: m.activeMs + ms },
+        },
+      }
+    }),
+  recordModelTurn: (id) =>
+    set((st) => {
+      const m = st.metrics[id] ?? { turns: 0, runs: 0, failedRuns: 0, abortedRuns: 0, activeMs: 0 }
+      return { metrics: { ...st.metrics, [id]: { ...m, turns: m.turns + 1 } } }
+    }),
+  recordRun: (id, ms, outcome) =>
+    set((st) => {
+      const m = st.metrics[id] ?? { turns: 0, runs: 0, failedRuns: 0, abortedRuns: 0, activeMs: 0 }
+      return {
+        metrics: {
+          ...st.metrics,
+          [id]: {
+            ...m,
+            runs: m.runs + 1,
+            failedRuns: m.failedRuns + (outcome === 'failed' ? 1 : 0),
+            abortedRuns: m.abortedRuns + (outcome === 'aborted' ? 1 : 0),
+            activeMs: m.activeMs + ms,
+          },
         },
       }
     }),
   setCost: (id, usd) =>
     set((st) => {
-      const m = st.metrics[id] ?? { turns: 0, activeMs: 0 }
+      const m = st.metrics[id] ?? { turns: 0, runs: 0, failedRuns: 0, abortedRuns: 0, activeMs: 0 }
       if (m.costUsd === usd) return st
       return { metrics: { ...st.metrics, [id]: { ...m, costUsd: usd } } }
     }),
@@ -93,7 +123,7 @@ type Live = {
   kind: 'terminal' | 'agent'
   title: string
   /** Semantic operations avoid typing into an unrelated native Pi overlay. */
-  prompt?: (text: string) => void | Promise<void>
+  prompt?: (text: string, requestId?: string) => void | Promise<void>
   /** Host-owned editable draft; used instead of typing into the native TUI. */
   insertDraft?: (text: string) => void
   rename?: (name: string) => void | Promise<void>
@@ -134,20 +164,34 @@ export function sendTo(id: string, data: string): boolean {
 
 export type AgentDeliveryResult = {
   id: string
-  status: 'accepted' | 'offline' | 'rejected'
+  status: 'accepted' | 'offline' | 'rejected' | 'uncertain'
   error?: string
+}
+
+function deliveryFailureStatus(error: unknown): 'rejected' | 'uncertain' {
+  if (
+    error
+    && typeof error === 'object'
+    && 'deliveryCertainty' in error
+    && (error.deliveryCertainty === 'rejected' || error.deliveryCertainty === 'uncertain')
+  ) return error.deliveryCertainty
+  return 'rejected'
 }
 
 /**
  * Await semantic acknowledgement for roster/direct delivery. PTY-backed agents
  * can only acknowledge a local write; Pi resolves after its companion result.
  */
-export async function deliverPrompt(id: string, text: string): Promise<AgentDeliveryResult> {
+export async function deliverPrompt(
+  id: string,
+  text: string,
+  requestId?: string,
+): Promise<AgentDeliveryResult> {
   const body = text.replace(/\r/g, '').replace(/\n+$/, '')
   const transport = transports.get(id)
   if (!transport) return { id, status: 'offline' }
   try {
-    if (transport.prompt) await transport.prompt(body)
+    if (transport.prompt) await transport.prompt(body, requestId)
     else {
       const wrapped = body.includes('\n') ? `\x1b[200~${body}\x1b[201~` : body
       transport.send(`${wrapped}\r`)
@@ -156,7 +200,7 @@ export async function deliverPrompt(id: string, text: string): Promise<AgentDeli
   } catch (error) {
     return {
       id,
-      status: 'rejected',
+      status: deliveryFailureStatus(error),
       error: error instanceof Error ? error.message : String(error),
     }
   }

@@ -664,12 +664,21 @@ fn validate_event_payload(event: &Value) -> Result<(), String> {
             ) || event
                 .get("turnIndex")
                 .is_some_and(|_| safe_integer(event, "turnIndex", 0).is_none())
+                || event.get("runId").is_some_and(|value| {
+                    !value
+                        .as_str()
+                        .is_some_and(|value| valid_identifier(value, 256))
+                })
                 || event.get("outcome").is_some_and(|outcome| {
                     !matches!(
                         outcome.as_str(),
                         Some("completed" | "aborted" | "failed" | "unknown")
                     )
                 })
+                || event.get("assistantText").is_some_and(|value| {
+                    !value.as_str().is_some_and(|value| value.len() <= 64 * 1024)
+                })
+                || !optional_bool(event, "truncated")
             {
                 return Err("Invalid companion lifecycle event".into());
             }
@@ -696,8 +705,16 @@ fn validate_event_payload(event: &Value) -> Result<(), String> {
                     .get("name")
                     .and_then(Value::as_str)
                     .is_some_and(|value| valid_text(value, 512))
+                || (event.get("phase").and_then(Value::as_str) == Some("end")
+                    && event.get("isError").and_then(Value::as_bool).is_none())
                 || !optional_bool(event, "isError")
                 || !optional_bool(event, "truncated")
+                || event.get("resolvedPath").is_some_and(|value| {
+                    event.get("phase").and_then(Value::as_str) != Some("start")
+                        || !value.as_str().is_some_and(|path| {
+                            valid_identifier(path, 32 * 1024) && Path::new(path).is_absolute()
+                        })
+                })
             {
                 return Err("Invalid companion tool event".into());
             }
@@ -1778,6 +1795,34 @@ mod tests {
         let mut bad_queue = queue;
         bad_queue["event"]["pending"] = Value::String("yes".into());
         assert!(decode_host_frame(&serde_json::to_vec(&bad_queue).unwrap(), "widget", 2).is_err());
+
+        let tool = json!({
+            "v": 1, "type": "event", "widgetId": "widget", "generation": 2, "seq": 3,
+            "event": {
+                "type": "tool", "phase": "start", "callId": "call", "name": "read",
+                "resolvedPath": "/tmp/file",
+            },
+        });
+        assert!(decode_host_frame(&serde_json::to_vec(&tool).unwrap(), "widget", 2).is_ok());
+        let mut relative_tool = tool;
+        relative_tool["event"]["resolvedPath"] = Value::String("relative".into());
+        assert!(
+            decode_host_frame(&serde_json::to_vec(&relative_tool).unwrap(), "widget", 2).is_err()
+        );
+
+        let lifecycle = json!({
+            "v": 1, "type": "event", "widgetId": "widget", "generation": 2, "seq": 2,
+            "event": {
+                "type": "lifecycle", "phase": "agent_settled", "runId": "2:1",
+                "outcome": "completed", "assistantText": "STATUS: OK", "truncated": false,
+            },
+        });
+        assert!(decode_host_frame(&serde_json::to_vec(&lifecycle).unwrap(), "widget", 2).is_ok());
+        let mut bad_lifecycle = lifecycle;
+        bad_lifecycle["event"]["runId"] = Value::String(String::new());
+        assert!(
+            decode_host_frame(&serde_json::to_vec(&bad_lifecycle).unwrap(), "widget", 2).is_err()
+        );
 
         let catalog = json!({
             "v": 1,

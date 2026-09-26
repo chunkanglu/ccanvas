@@ -492,21 +492,22 @@ function AgentDot({ id }: { id: string }) {
   return <span className={`agent-dot agent-dot--${status}`} title={title} />
 }
 
-// Compact activity meter: turns · active time · scraped cost (run /cost to fill).
+// Compact activity meter: settled runs / model turns · active time · scraped cost.
 function fmtMeter(m: AgentMetrics): string {
   const time =
     m.activeMs >= 60000
       ? `${Math.round(m.activeMs / 60000)}m`
       : `${Math.round(m.activeMs / 1000)}s`
-  const parts = [`${m.turns}t`, time]
+  const parts = [`${m.runs}r/${m.turns}t`, time]
+  if (m.failedRuns || m.abortedRuns) parts.push(`!${m.failedRuns + m.abortedRuns}`)
   if (m.costUsd != null) parts.push(`$${m.costUsd.toFixed(2)}`)
   return parts.join(' · ')
 }
 function AgentMeter({ id }: { id: string }) {
   const m = useAgents((s) => s.metrics[id])
-  if (!m || (m.turns === 0 && m.costUsd == null)) return null
+  if (!m || (m.runs === 0 && m.turns === 0 && m.costUsd == null)) return null
   return (
-    <span className="widget__meter" title="turns · active time · cost (run /cost)">
+    <span className="widget__meter" title="settled runs / model turns · active time · failures · cost">
       {fmtMeter(m)}
     </span>
   )

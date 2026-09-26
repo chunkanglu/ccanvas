@@ -63,6 +63,17 @@ type Bridge = {
 }
 
 export type ManagedPiDelivery = 'steer' | 'followUp'
+export type PiControlFailureCertainty = 'rejected' | 'uncertain'
+
+export class PiControlError extends Error {
+  readonly deliveryCertainty: PiControlFailureCertainty
+
+  constructor(deliveryCertainty: PiControlFailureCertainty, message: string) {
+    super(message)
+    this.name = 'PiControlError'
+    this.deliveryCertainty = deliveryCertainty
+  }
+}
 
 export function managedPiPromptControl(
   text: string,
@@ -134,7 +145,7 @@ export async function connectManagedPi(
   const rejectPendingControls = (message: string) => {
     for (const [requestId, pendingControl] of pendingControls) {
       clearTimeout(pendingControl.timer)
-      pendingControl.reject(new Error(`${message} (${requestId})`))
+      pendingControl.reject(new PiControlError('uncertain', `${message} (${requestId})`))
     }
     pendingControls.clear()
   }
@@ -178,7 +189,7 @@ export async function connectManagedPi(
                 clearTimeout(pendingControl.timer)
                 pendingControls.delete(frame.requestId)
                 if (frame.ok) pendingControl.resolve(frame.requestId)
-                else pendingControl.reject(new Error(frame.error ?? 'Pi control failed'))
+                else pendingControl.reject(new PiControlError('rejected', frame.error ?? 'Pi control failed'))
               }
             }
             if (frame.type === 'event' || frame.type === 'result' || frame.type === 'pong') {
@@ -268,14 +279,14 @@ export async function connectManagedPi(
       send(data) { invokeCurrent('pi_write', { data }) },
       resize(cols, rows) { invokeCurrent('pi_resize', { cols, rows }) },
       control(control, requestId = crypto.randomUUID()) {
-        if (closed) return Promise.reject(new Error('Managed Pi runtime is closed'))
+        if (closed) return Promise.reject(new PiControlError('rejected', 'Managed Pi runtime is closed'))
         if (pendingControls.has(requestId)) {
-          return Promise.reject(new Error(`Pi control request is already pending: ${requestId}`))
+          return Promise.reject(new PiControlError('rejected', `Pi control request is already pending: ${requestId}`))
         }
         return new Promise<string>((resolve, reject) => {
           const timer = setTimeout(() => {
             pendingControls.delete(requestId)
-            reject(new Error(`Pi control acknowledgement timed out: ${requestId}`))
+            reject(new PiControlError('uncertain', `Pi control acknowledgement timed out: ${requestId}`))
           }, 10_000)
           pendingControls.set(requestId, { resolve, reject, timer })
           void bridge.invoke('pi_control', {
@@ -289,7 +300,10 @@ export async function connectManagedPi(
             if (!pendingControl) return
             clearTimeout(pendingControl.timer)
             pendingControls.delete(requestId)
-            reject(error instanceof Error ? error : new Error(String(error)))
+            reject(new PiControlError(
+              'uncertain',
+              error instanceof Error ? error.message : String(error),
+            ))
           })
         })
       },

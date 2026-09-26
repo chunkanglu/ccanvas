@@ -6,6 +6,9 @@
  * tools/commands, changes trust, or replaces native extension dialogs.
  */
 import { createConnection, type Socket } from 'node:net'
+import { homedir } from 'node:os'
+import { isAbsolute, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent'
 import {
   PI_COMPANION_MAX_REPLAY_BYTES,
@@ -44,6 +47,10 @@ type ProcessRuntime = {
   lifecycleSnapshot?: CompanionEventPayload
   catalogSnapshot?: CompanionEventPayload
   queueSnapshot?: CompanionEventPayload
+  nextRun: number
+  currentRunId?: string
+  currentAssistantText: string
+  assistantTextTruncated: boolean
   reconnectAttempt: number
   reconnectTimer?: ReturnType<typeof setTimeout>
   stopping: boolean
@@ -94,6 +101,9 @@ function state(): ProcessRuntime | null {
     authenticated: false,
     owner: 0,
     results: new Map(),
+    nextRun: 0,
+    currentAssistantText: '',
+    assistantTextTruncated: false,
     reconnectAttempt: 0,
     stopping: false,
   })
@@ -108,6 +118,21 @@ const truncateUtf8 = (value: string, maxBytes: number): string => {
     const size = bytes(character)
     if (used + size > maxBytes) break
     result += character
+    used += size
+  }
+  return result
+}
+
+const truncateUtf8Tail = (value: string, maxBytes: number): string => {
+  if (bytes(value) <= maxBytes) return value
+  let result = ''
+  let used = 0
+  const characters = Array.from(value)
+  for (let index = characters.length - 1; index >= 0; index--) {
+    const character = characters[index]
+    const size = bytes(character)
+    if (used + size > maxBytes) break
+    result = character + result
     used += size
   }
   return result
@@ -383,6 +408,46 @@ function catalogEvent(pi: ExtensionAPI, ctx: ExtensionContext): CompanionEventPa
   }
 }
 
+const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g
+
+/** Mirror Pi 0.84 built-in file-tool path resolution without importing private APIs. */
+function resolvedToolPath(toolName: string, input: unknown, cwd: string): string | undefined {
+  if (!['read', 'write', 'edit'].includes(toolName)) return undefined
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined
+  const raw = (input as { path?: unknown }).path
+  if (typeof raw !== 'string' || !raw || /[\u0000\r\n]/.test(raw)) return undefined
+  try {
+    let normalized = raw.replace(UNICODE_SPACES, ' ')
+    if (normalized.startsWith('@')) normalized = normalized.slice(1)
+    if (normalized === '~') normalized = homedir()
+    else if (normalized.startsWith('~/')) normalized = join(homedir(), normalized.slice(2))
+    else if (/^file:\/\//.test(normalized)) normalized = fileURLToPath(normalized)
+    const absolute = isAbsolute(normalized) ? resolve(normalized) : resolve(cwd, normalized)
+    return bytes(absolute) <= 32 * 1024 ? absolute : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function assistantMessageText(message: unknown): string {
+  if (!message || typeof message !== 'object') return ''
+  const content = (message as { content?: unknown }).content
+  if (!Array.isArray(content)) return ''
+  return content
+    .flatMap(block => {
+      if (!block || typeof block !== 'object') return []
+      const value = block as { type?: string; text?: unknown }
+      return value.type === 'text' && typeof value.text === 'string' ? [value.text] : []
+    })
+    .join('\n')
+}
+
+function setFinalAssistantText(runtime: ProcessRuntime, value: string): void {
+  const bounded = truncateUtf8Tail(value, 64 * 1024)
+  runtime.currentAssistantText = bounded
+  runtime.assistantTextTruncated = bounded !== value
+}
+
 function outcome(messages: unknown[]): 'completed' | 'aborted' | 'failed' | 'unknown' {
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i] as { role?: string; stopReason?: string }
@@ -481,22 +546,35 @@ export default function companion(pi: ExtensionAPI): void {
   pi.on('before_agent_start', (_event, next) => {
     remember(next)
     settledOutcome = 'unknown'
+    runtime.currentRunId = `${runtime.config.generation}:${++runtime.nextRun}`
+    runtime.currentAssistantText = ''
+    runtime.assistantTextTruncated = false
   })
   pi.on('agent_start', (_event, next) => {
     remember(next)
-    emit(runtime, { type: 'lifecycle', phase: 'agent_start' })
+    emit(runtime, {
+      type: 'lifecycle', phase: 'agent_start',
+      ...(runtime.currentRunId ? { runId: runtime.currentRunId } : {}),
+    })
     emit(runtime, queueEvent(next))
   })
   pi.on('agent_end', (event, next) => {
     remember(next)
-    settledOutcome = outcome(event.messages)
-    emit(runtime, { type: 'lifecycle', phase: 'agent_end', outcome: settledOutcome })
+    const finalOutcome = outcome(event.messages)
+    if (finalOutcome !== 'unknown' || settledOutcome === 'unknown') settledOutcome = finalOutcome
+    emit(runtime, {
+      type: 'lifecycle', phase: 'agent_end', outcome: settledOutcome,
+      ...(runtime.currentRunId ? { runId: runtime.currentRunId } : {}),
+    })
   })
   pi.on('agent_settled', (_event, next) => {
     remember(next)
     emit(runtime, {
       type: 'lifecycle', phase: 'agent_settled',
       outcome: settledOutcome === 'unknown' ? 'completed' : settledOutcome,
+      ...(runtime.currentRunId ? { runId: runtime.currentRunId } : {}),
+      ...(runtime.currentAssistantText ? { assistantText: runtime.currentAssistantText } : {}),
+      ...(runtime.assistantTextTruncated ? { truncated: true } : {}),
     })
     emit(runtime, sessionEvent(next, 'info'))
     emit(runtime, catalogEvent(pi, next))
@@ -513,14 +591,32 @@ export default function companion(pi: ExtensionAPI): void {
   pi.on('message_update', (event, next) => {
     remember(next)
     const update = event.assistantMessageEvent
+    if (update.type === 'start') {
+      runtime.currentAssistantText = ''
+      runtime.assistantTextTruncated = false
+    }
     if (update.type === 'text_start') emit(runtime, { type: 'assistant', phase: 'start' })
-    if (update.type === 'text_delta') emit(runtime, { type: 'assistant', phase: 'delta', text: update.delta })
+    if (update.type === 'text_delta') {
+      const combined = runtime.currentAssistantText + update.delta
+      const bounded = truncateUtf8Tail(combined, 64 * 1024)
+      if (bounded !== combined) runtime.assistantTextTruncated = true
+      runtime.currentAssistantText = bounded
+      emit(runtime, { type: 'assistant', phase: 'delta', text: update.delta })
+    }
     if (update.type === 'text_end') emit(runtime, { type: 'assistant', phase: 'end' })
-    if (update.type === 'error') settledOutcome = update.reason === 'aborted' ? 'aborted' : 'failed'
+    if (update.type === 'done') setFinalAssistantText(runtime, assistantMessageText(update.message))
+    if (update.type === 'error') {
+      setFinalAssistantText(runtime, assistantMessageText(update.error))
+      settledOutcome = update.reason === 'aborted' ? 'aborted' : 'failed'
+    }
   })
   pi.on('tool_execution_start', (event, next) => {
     remember(next)
-    emit(runtime, { type: 'tool', phase: 'start', callId: event.toolCallId, name: event.toolName, input: event.args })
+    const resolvedPath = resolvedToolPath(event.toolName, event.args, next.cwd)
+    emit(runtime, {
+      type: 'tool', phase: 'start', callId: event.toolCallId, name: event.toolName, input: event.args,
+      ...(resolvedPath ? { resolvedPath } : {}),
+    })
   })
   pi.on('tool_execution_update', (event, next) => {
     remember(next)

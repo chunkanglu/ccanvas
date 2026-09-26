@@ -41,7 +41,10 @@ export type CompanionEventPayload =
       type: 'lifecycle'
       phase: 'agent_start' | 'agent_end' | 'agent_settled' | 'turn_start' | 'turn_end'
       turnIndex?: number
+      runId?: string
       outcome?: 'completed' | 'aborted' | 'failed' | 'unknown'
+      assistantText?: string
+      truncated?: boolean
     }
   | { type: 'assistant'; phase: 'start' | 'delta' | 'end'; text?: string; truncated?: boolean }
   | {
@@ -53,6 +56,7 @@ export type CompanionEventPayload =
       output?: unknown
       isError?: boolean
       truncated?: boolean
+      resolvedPath?: string
     }
   | { type: 'queue'; pending: boolean }
   | {
@@ -159,9 +163,15 @@ function assertEvent(value: unknown): asserts value is CompanionEventPayload {
         throw new Error('Invalid lifecycle event')
       }
       if (value.turnIndex !== undefined && !integer(value.turnIndex)) throw new Error('Invalid turn index')
+      if (value.runId !== undefined && !text(value.runId, 256)) throw new Error('Invalid lifecycle run id')
       if (value.outcome !== undefined && !['completed', 'aborted', 'failed', 'unknown'].includes(String(value.outcome))) {
         throw new Error('Invalid lifecycle outcome')
       }
+      if (
+        value.assistantText !== undefined
+        && (typeof value.assistantText !== 'string' || byteLength(value.assistantText) > 64 * 1024)
+      ) throw new Error('Invalid lifecycle assistant text')
+      if (value.truncated !== undefined && typeof value.truncated !== 'boolean') throw new Error('Invalid lifecycle truncation state')
       return
     case 'assistant':
       if (!['start', 'delta', 'end'].includes(String(value.phase))) throw new Error('Invalid assistant event')
@@ -172,8 +182,20 @@ function assertEvent(value: unknown): asserts value is CompanionEventPayload {
       if (!['start', 'update', 'end'].includes(String(value.phase)) || !text(value.callId, 512) || !text(value.name, 512)) {
         throw new Error('Invalid tool event')
       }
-      if (value.isError !== undefined && typeof value.isError !== 'boolean') throw new Error('Invalid tool error state')
+      if (
+        (value.phase === 'end' && typeof value.isError !== 'boolean')
+        || (value.isError !== undefined && typeof value.isError !== 'boolean')
+      ) throw new Error('Invalid tool error state')
       if (value.truncated !== undefined && typeof value.truncated !== 'boolean') throw new Error('Invalid tool truncation state')
+      if (
+        value.resolvedPath !== undefined
+        && (
+          value.phase !== 'start'
+          || !text(value.resolvedPath, 32 * 1024)
+          || /[\r\n\t]/.test(value.resolvedPath)
+          || !/^(?:\/|[A-Za-z]:[\\/])/.test(value.resolvedPath)
+        )
+      ) throw new Error('Invalid tool resolved path')
       return
     case 'queue':
       if (typeof value.pending !== 'boolean') throw new Error('Invalid companion queue event')

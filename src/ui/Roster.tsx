@@ -128,27 +128,28 @@ export function Roster() {
                   {row.tab.id !== activeTabId && (
                     <span className="roster__tab">{row.tab.name}</span>
                   )}
-                  {m && (m.turns > 0 || m.costUsd != null) && (
-                    <span className="roster__meter">
-                      {m.turns}t{m.costUsd != null ? ` · $${m.costUsd.toFixed(2)}` : ''}
+                  {m && (m.runs > 0 || m.turns > 0 || m.costUsd != null) && (
+                    <span
+                      className="roster__meter"
+                      title={`${m.runs} settled runs · ${m.turns} model turns · ${m.failedRuns} failed · ${m.abortedRuns} aborted`}
+                    >
+                      {m.runs}r/{m.turns}t{m.costUsd != null ? ` · $${m.costUsd.toFixed(2)}` : ''}
                     </span>
                   )}
                 </div>
                 {ll && <div className="roster__last">{ll}</div>}
               </div>
-              {row.agent.harness !== 'pi' && (
-                <button
-                  className={`roster__track${tracking ? ' roster__track--on' : ''}`}
-                  title={tracking ? 'Stop tracking camera' : 'Track this agent (orbit its files)'}
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    if (tracking) stopTrackingAgent(false)
-                    else void startTrackingAgent(row.agent.id, row.tab.id)
-                  }}
-                >
-                  <IconTrack size={15} />
-                </button>
-              )}
+              <button
+                className={`roster__track${tracking ? ' roster__track--on' : ''}`}
+                title={tracking ? 'Stop tracking camera' : 'Track this agent (orbit successful file tools)'}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  if (tracking) stopTrackingAgent(false)
+                  else void startTrackingAgent(row.agent.id, row.tab.id)
+                }}
+              >
+                <IconTrack size={15} />
+              </button>
             </div>
           )
         })}

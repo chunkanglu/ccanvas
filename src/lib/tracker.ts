@@ -1,11 +1,5 @@
-// Agent-tracking camera. Bind a tracking session to one agent and, as it works,
-// watch its transcript for file operations; every newly-touched file opens as a
-// viewer widget arranged in an orbit around the agent with an arrow pointing
-// back to it, so you can watch what the agent is doing laid out spatially. The
-// camera stays framed on the agent + its satellites.
-//
-// Non-reactive (like flow.ts): a store flag (trackingAgentId) drives the UI and
-// calls in here; this module owns the polling + element spawning.
+// Provider-neutral tracking camera. Claude retains bounded transcript polling;
+// Pi feeds successful structured tool-call pairs from its companion.
 
 import { useStore } from '../store/workspace'
 import type { ArrowElement, WidgetElement } from './types'
@@ -17,14 +11,33 @@ import { widgetKindForFile } from './filetypes'
 import { boundsOfMany, clamp } from './geometry'
 import { notify } from './agents'
 
+export type StructuredToolEvent = {
+  agentId: string
+  workspaceId: string
+  generation: number
+  seq: number
+  replayed: boolean
+  phase: 'start' | 'update' | 'end'
+  callId: string
+  name: string
+  input?: unknown
+  isError?: boolean
+  truncated?: boolean
+  /** Absolute path resolved by the Pi companion from the live runtime cwd. */
+  resolvedPath?: string
+}
+
+type PendingTool = { name: string; input: unknown; resolvedPath?: string }
 type Session = {
   agentId: string
   workspaceId: string
-  /** transcript lines already consumed */
+  harness: 'pi' | 'claude'
   cursor: number
-  /** absolute file path → the widget id showing it */
+  generation?: number
+  lastSeq: number
+  pendingTools: Map<string, PendingTool>
   openedByPath: Map<string, string>
-  /** how many satellites we've positioned (drives the orbit slot) */
+  blockedPaths: Set<string>
   placed: number
   stopped: boolean
   dispose: (() => void) | null
@@ -34,13 +47,18 @@ type Session = {
 let session: Session | null = null
 
 const MAX_SATELLITES = 20
+const MAX_PATH_BYTES = 32 * 1024
 const SAT_W = 360
 const SAT_H = 280
 const POLL_MS = 1000
-
-// topbar + tabs; matches CHROME_H elsewhere
 const CHROME_H = 82
 const viewport = () => ({ vw: window.innerWidth, vh: window.innerHeight - CHROME_H })
+export const TRACKED_FILE_CHANGED_EVENT = 'ccanvas:tracked-file-changed'
+
+function announceTrackedMutation(path: string, file: ToolFile) {
+  if (!file.mutate || typeof window.dispatchEvent !== 'function' || typeof CustomEvent === 'undefined') return
+  window.dispatchEvent(new CustomEvent(TRACKED_FILE_CHANGED_EVENT, { detail: { path } }))
+}
 
 export function trackingAgentId(): string | null {
   return session?.agentId ?? null
@@ -49,194 +67,264 @@ export function trackedFileCount(): number {
   return session?.openedByPath.size ?? 0
 }
 
-/** Position a satellite on a ring around the agent (8 per ring, growing out). */
+/** Explicit built-in mapping. Shell/custom tools are intentionally not guessed. */
+export function structuredToolFile(name: string, input: unknown): ToolFile | null {
+  const normalized = name.toLowerCase()
+  if (normalized !== 'read' && normalized !== 'write' && normalized !== 'edit') return null
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null
+  const path = (input as Record<string, unknown>).path
+  if (typeof path !== 'string' || !path || new TextEncoder().encode(path).byteLength > MAX_PATH_BYTES) return null
+  if (/\u0000|[\r\n]/.test(path)) return null
+  return { path, tool: normalized, mutate: normalized !== 'read' }
+}
+
+/** Refuse common credential/key locations before auto-opening a viewer. */
+export function isSensitiveTrackedPath(path: string): boolean {
+  const normalized = path.replace(/\\/g, '/').toLowerCase()
+  const segments = normalized.split('/').filter(Boolean)
+  const name = segments[segments.length - 1] ?? ''
+  if (segments.some(segment => ['.ssh', '.aws'].includes(segment))) return true
+  if (normalized.includes('/.config/gcloud/') || normalized.includes('/.pi/agent/auth')) return true
+  if (/^\.env(?:\.|$)/.test(name)) return true
+  if (/^(?:credentials?|secrets?)(?:\.[^.]+)?$/.test(name)) return true
+  if (/^(?:id_rsa|id_ed25519|id_ecdsa)(?:\.pub)?$/.test(name)) return true
+  return /\.(?:pem|p12|pfx|key)$/.test(name)
+}
+
 function orbitPos(agent: WidgetElement, index: number): { x: number; y: number } {
   const cx = agent.x + agent.w / 2
   const cy = agent.y + agent.h / 2
-  const perRing = 8
-  const ring = Math.floor(index / perRing)
-  const slot = index % perRing
-  const baseR = Math.max(agent.w, agent.h) / 2 + 280
-  const r = baseR + ring * 260
-  const ang = ((-90 + slot * (360 / perRing)) * Math.PI) / 180
-  return { x: cx + Math.cos(ang) * r - SAT_W / 2, y: cy + Math.sin(ang) * r - SAT_H / 2 }
+  const ring = Math.floor(index / 8)
+  const slot = index % 8
+  const radius = Math.max(agent.w, agent.h) / 2 + 280 + ring * 260
+  const angle = ((-90 + slot * 45) * Math.PI) / 180
+  return { x: cx + Math.cos(angle) * radius - SAT_W / 2, y: cy + Math.sin(angle) * radius - SAT_H / 2 }
 }
 
-/** Build the arrow connecting the agent to one of its satellites. */
-function trackArrow(agent: WidgetElement, targetId: string, f: ToolFile): ArrowElement {
+function trackArrow(agent: WidgetElement, targetId: string, file: ToolFile): ArrowElement {
   return {
-    id: newId(),
-    type: 'arrow',
-    x1: 0,
-    y1: 0,
-    x2: 0,
-    y2: 0,
+    id: newId(), type: 'arrow', x1: 0, y1: 0, x2: 0, y2: 0,
     color: agent.color ?? WIDGET_ACCENT.agent,
     size: 2,
     dashed: true,
     from: { id: agent.id },
     to: { id: targetId },
-    label: f.mutate ? undefined : 'read',
+    label: file.mutate ? undefined : 'read',
     z: 0,
     trackOf: agent.id,
   }
 }
 
-/** Center the camera on just the agent at a comfortable zoom. */
 function frameAgent(agentId: string) {
-  const s = useStore.getState()
-  const ws = s.active()
-  const agent = ws?.elements.find((e) => e.id === agentId)
+  const state = useStore.getState()
+  const workspace = state.active()
+  const agent = workspace?.elements.find(element => element.id === agentId)
   if (!agent || agent.type !== 'widget') return
   const { vw, vh } = viewport()
-  const zoom = clamp(s.active()!.camera.zoom, 0.5, 1)
+  const zoom = clamp(workspace!.camera.zoom, 0.5, 1)
   const cx = agent.x + agent.w / 2
   const cy = agent.y + agent.h / 2
-  s.setCamera({ zoom, x: vw / 2 - cx * zoom, y: vh / 2 - cy * zoom })
+  state.setCamera({ zoom, x: vw / 2 - cx * zoom, y: vh / 2 - cy * zoom })
 }
 
-/** Fit the agent + all its satellites into the viewport. */
 function frameOrbit() {
-  if (!session) return
-  const s = useStore.getState()
-  const ws = s.active()
-  if (!ws || ws.id !== session.workspaceId) return
-  const ids = new Set<string>([session.agentId, ...session.openedByPath.values()])
-  const els = ws.elements.filter((e) => ids.has(e.id))
-  const b = boundsOfMany(els)
-  if (!b) return
+  const current = session
+  if (!current) return
+  const state = useStore.getState()
+  const workspace = state.active()
+  if (!workspace || workspace.id !== current.workspaceId) return
+  const ids = new Set<string>([current.agentId, ...current.openedByPath.values()])
+  const bounds = boundsOfMany(workspace.elements.filter(element => ids.has(element.id)))
+  if (!bounds) return
   const { vw, vh } = viewport()
   const pad = 120
-  const zoom = clamp(Math.min(vw / (b.w + pad * 2), vh / (b.h + pad * 2)), 0.1, 1.3)
-  const cx = b.x + b.w / 2
-  const cy = b.y + b.h / 2
-  s.setCamera({ zoom, x: vw / 2 - cx * zoom, y: vh / 2 - cy * zoom })
+  const zoom = clamp(Math.min(vw / (bounds.w + pad * 2), vh / (bounds.h + pad * 2)), 0.1, 1.3)
+  const cx = bounds.x + bounds.w / 2
+  const cy = bounds.y + bounds.h / 2
+  state.setCamera({ zoom, x: vw / 2 - cx * zoom, y: vh / 2 - cy * zoom })
 }
 
-/** Poll the transcript once and reconcile the orbit with newly-touched files. */
-async function tick() {
-  if (!session || session.stopped) return
-  const s = useStore.getState()
-  const ws = s.active()
-  if (!ws || ws.id !== session.workspaceId) return
-  // only act while the agent's own tab is showing, so we never spawn satellites
-  // onto the wrong canvas or fight a tab the user switched to
-  const agent = ws.elements.find(
-    (e): e is WidgetElement => e.id === session!.agentId && e.type === 'widget',
+function processTrackedFile(current: Session, file: ToolFile, resolvedPath?: string) {
+  if (session !== current || current.stopped) return
+  const state = useStore.getState()
+  const workspace = state.active()
+  if (!workspace || workspace.id !== current.workspaceId) return
+  const agent = workspace.elements.find(
+    (element): element is WidgetElement =>
+      element.id === current.agentId && element.type === 'widget' && element.kind === 'agent',
   )
-  if (!agent || agent.kind !== 'agent') return
+  if (!agent) return
 
-  const content = await readTranscript(agent.cwd, agent.sessionId)
-  if (content == null) return
-  const { files, cursor } = extractToolFiles(content, session.cursor)
-  session.cursor = cursor
-  if (!files.length) return
-
-  let added = false
-  for (const f of files) {
-    const abs = resolvePath(agent.cwd, f.path)
-    const known = session.openedByPath.get(abs)
-    if (known) {
-      s.bringToFront([known])
-      continue
+  const absolute = resolvedPath ?? resolvePath(agent.cwd, file.path)
+  if (isSensitiveTrackedPath(absolute)) {
+    if (!current.blockedPaths.has(absolute)) {
+      current.blockedPaths.add(absolute)
+      notify('ccanvas tracking', `Refused to auto-open sensitive file ${baseName(absolute)}.`)
     }
-    // adopt a viewer the user already has open for this file (don't duplicate)
-    const existing = ws.elements.find(
-      (e): e is WidgetElement =>
-        e.type === 'widget' && !!e.path && resolvePath(e.cwd, e.path) === abs,
-    )
-    if (existing) {
-      session.openedByPath.set(abs, existing.id)
-      s.addElement(trackArrow(agent, existing.id, f))
-      s.bringToFront([existing.id])
-      added = true
-      continue
-    }
-    if (session.openedByPath.size >= MAX_SATELLITES) {
-      if (!session.cappedNotified) {
-        session.cappedNotified = true
-        notify('ccanvas tracking', `Showing the first ${MAX_SATELLITES} files — stop & restart to reset the orbit.`)
-      }
-      continue
-    }
-    const pos = orbitPos(agent, session.placed++)
-    const wid = newId()
-    const widget: WidgetElement = {
-      id: wid,
-      type: 'widget',
-      kind: widgetKindForFile(abs),
-      x: pos.x,
-      y: pos.y,
-      w: SAT_W,
-      h: SAT_H,
-      z: 0,
-      title: baseName(abs),
-      path: abs,
-      cwd: agent.cwd,
-      trackOf: agent.id,
-    }
-    s.addElements([widget, trackArrow(agent, wid, f)])
-    session.openedByPath.set(abs, wid)
-    added = true
+    return
   }
+  const known = current.openedByPath.get(absolute)
+  if (known) {
+    state.bringToFront([known])
+    announceTrackedMutation(absolute, file)
+    return
+  }
+  const existing = workspace.elements.find(
+    (element): element is WidgetElement =>
+      element.type === 'widget' && !!element.path && resolvePath(element.cwd, element.path) === absolute,
+  )
+  if (existing) {
+    current.openedByPath.set(absolute, existing.id)
+    state.addElement(trackArrow(agent, existing.id, file))
+    state.bringToFront([existing.id])
+    announceTrackedMutation(absolute, file)
+    frameOrbit()
+    return
+  }
+  if (current.openedByPath.size >= MAX_SATELLITES) {
+    if (!current.cappedNotified) {
+      current.cappedNotified = true
+      notify('ccanvas tracking', `Showing the first ${MAX_SATELLITES} files — stop and restart to reset the orbit.`)
+    }
+    return
+  }
+
+  const position = orbitPos(agent, current.placed++)
+  const widgetId = newId()
+  const widget: WidgetElement = {
+    id: widgetId,
+    type: 'widget',
+    kind: widgetKindForFile(absolute),
+    x: position.x,
+    y: position.y,
+    w: SAT_W,
+    h: SAT_H,
+    z: 0,
+    title: baseName(absolute),
+    path: absolute,
+    cwd: agent.cwd,
+    trackOf: agent.id,
+  }
+  state.addElements([widget, trackArrow(agent, widgetId, file)])
+  current.openedByPath.set(absolute, widgetId)
   if (
-    added
-    && useStore.getState().trackingAgentId === session.agentId
-    && useStore.getState().trackingAgentTabId === session.workspaceId
+    useStore.getState().trackingAgentId === current.agentId
+    && useStore.getState().trackingAgentTabId === current.workspaceId
   ) frameOrbit()
 }
 
-/**
- * Begin tracking an agent. Switches to the agent's tab (so satellites land on
- * the right canvas) and frames it. Returns false if the agent can't be found.
- */
+/** Non-replayed successful Pi tool calls enter here from the companion. */
+export function onStructuredToolEvent(event: StructuredToolEvent): void {
+  const current = session
+  if (
+    !current
+    || current.stopped
+    || current.harness !== 'pi'
+    || event.replayed
+    || event.agentId !== current.agentId
+    || event.workspaceId !== current.workspaceId
+    || !Number.isSafeInteger(event.generation)
+    || event.generation < 1
+    || !Number.isSafeInteger(event.seq)
+    || event.seq < 0
+  ) return
+
+  if (current.generation !== undefined && event.generation < current.generation) return
+  if (current.generation !== event.generation) {
+    current.generation = event.generation
+    current.lastSeq = -1
+    current.pendingTools.clear()
+  }
+  if (event.seq <= current.lastSeq) return
+  current.lastSeq = event.seq
+
+  const key = `${event.generation}:${event.callId}`
+  if (event.phase === 'start') {
+    const resolvedPath = typeof event.resolvedPath === 'string'
+      && /^(?:\/|[A-Za-z]:[\\/])/.test(event.resolvedPath)
+      ? event.resolvedPath
+      : undefined
+    if (!event.truncated || resolvedPath) {
+      current.pendingTools.set(key, { name: event.name, input: event.input, resolvedPath })
+    }
+    return
+  }
+  if (event.phase !== 'end') return
+  const pending = current.pendingTools.get(key)
+  current.pendingTools.delete(key)
+  if (!pending || event.isError !== false) return
+  const file = structuredToolFile(
+    pending.name,
+    pending.resolvedPath ? { path: pending.resolvedPath } : pending.input,
+  )
+  if (file) processTrackedFile(current, file, pending.resolvedPath)
+}
+
+/** Claude compatibility polling. */
+async function tickClaude() {
+  const current = session
+  if (!current || current.stopped || current.harness !== 'claude') return
+  const state = useStore.getState()
+  const workspace = state.active()
+  if (!workspace || workspace.id !== current.workspaceId) return
+  const agent = workspace.elements.find(
+    (element): element is WidgetElement =>
+      element.id === current.agentId && element.type === 'widget' && element.kind === 'agent',
+  )
+  if (!agent) return
+  const content = await readTranscript(agent.cwd, agent.sessionId)
+  if (session !== current || current.stopped || content == null) return
+  const extracted = extractToolFiles(content, current.cursor)
+  current.cursor = extracted.cursor
+  for (const file of extracted.files) processTrackedFile(current, file)
+}
+
 export async function startTracking(agentId: string, workspaceId?: string): Promise<boolean> {
   stopTracking(false)
-  const s = useStore.getState()
+  const state = useStore.getState()
   const tab = workspaceId
-    ? s.tabs.find((candidate) => candidate.id === workspaceId)
-    : s.tabs.find((candidate) => candidate.elements.some((element) => element.id === agentId))
+    ? state.tabs.find(candidate => candidate.id === workspaceId)
+    : state.tabs.find(candidate => candidate.elements.some(element => element.id === agentId))
   if (!tab) return false
-  const agent = tab.elements.find((e) => e.id === agentId)
+  const agent = tab.elements.find(element => element.id === agentId)
   if (!agent || agent.type !== 'widget' || agent.kind !== 'agent') return false
-  if (s.activeTabId !== tab.id) s.switchTab(tab.id)
+  if (state.activeTabId !== tab.id) state.switchTab(tab.id)
 
-  // seed the cursor to the current end of the transcript so we only orbit files
-  // the agent touches AFTER tracking starts — not its whole back-history
-  const seed = await readTranscript(agent.cwd, agent.sessionId)
+  const harness = agent.harness === 'pi' ? 'pi' : 'claude'
+  const seed = harness === 'claude' ? await readTranscript(agent.cwd, agent.sessionId) : null
   const cursor = seed ? extractToolFiles(seed, 0).cursor : 0
-
-  const timer = setInterval(() => void tick(), POLL_MS)
+  const timer = harness === 'claude' ? setInterval(() => void tickClaude(), POLL_MS) : undefined
   session = {
     agentId,
     workspaceId: tab.id,
+    harness,
     cursor,
+    lastSeq: -1,
+    pendingTools: new Map(),
     openedByPath: new Map(),
+    blockedPaths: new Set(),
     placed: 0,
     stopped: false,
-    dispose: () => clearInterval(timer),
+    dispose: timer ? () => clearInterval(timer) : null,
     cappedNotified: false,
   }
   frameAgent(agentId)
-  void tick()
+  if (harness === 'claude') void tickClaude()
   return true
 }
 
-/** Stop tracking. When `cleanup`, remove the orbit (satellites + their arrows). */
 export function stopTracking(cleanup: boolean) {
-  if (!session) return
-  session.stopped = true
-  session.dispose?.()
-  const agentId = session.agentId
-  const workspaceId = session.workspaceId
+  const current = session
+  if (!current) return
+  current.stopped = true
+  current.pendingTools.clear()
+  current.dispose?.()
   session = null
   if (!cleanup) return
-  const s = useStore.getState()
-  // the orbit lives on the agent's tab — switch there so removeElements (which
-  // acts on the active tab) actually clears it, even when stopped from elsewhere
-  const tab = s.tabs.find((candidate) => candidate.id === workspaceId)
+  const state = useStore.getState()
+  const tab = state.tabs.find(candidate => candidate.id === current.workspaceId)
   if (!tab) return
-  if (s.activeTabId !== tab.id) s.switchTab(tab.id)
-  const ids = tab.elements.filter((e) => e.trackOf === agentId).map((e) => e.id)
-  if (ids.length) s.removeElements(ids)
+  if (state.activeTabId !== tab.id) state.switchTab(tab.id)
+  const ids = tab.elements.filter(element => element.trackOf === current.agentId).map(element => element.id)
+  if (ids.length) state.removeElements(ids)
 }
