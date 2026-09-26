@@ -28,7 +28,7 @@ import {
   IconClaude,
   IconInfo,
 } from '../ui/icons'
-import { agentRuntimeId, useAgents, sendTo, sendPrompt, renameSession, isLive as isSessionLive, type AgentMetrics } from '../lib/agents'
+import { agentRuntimeId, useAgents, sendTo, sendPrompt, renameSession, isLive as isSessionLive, type AgentMetrics, type PiSessionUsage } from '../lib/agents'
 import { CANVAS_FILE_DROP_EVENT } from '../lib/canvas-file-drag'
 import { NoteBody } from './NoteBody'
 import { WebBody } from './WebBody'
@@ -48,7 +48,7 @@ import { PlotBody } from './PlotBody'
 import { TranscriptBody } from './TranscriptBody'
 import { VideoBody } from './VideoBody'
 import { MediaInfoBody } from './MediaInfoBody'
-import { ClaudeBody } from './ClaudeBody'
+import { KnowledgeGraphBody } from './KnowledgeGraphBody'
 import { WidgetErrorBoundary } from '../ui/WidgetErrorBoundary'
 
 const KIND_ICON: Record<WidgetKind, (p: { className?: string; size?: number }) => JSX.Element> = {
@@ -361,6 +361,11 @@ export function WidgetFrame({
             {folder}
           </span>
         )}
+        {el.kind === 'agent' && (
+          <span className={`agent-harness agent-harness--${el.harness === 'pi' ? 'pi' : 'claude'}`}>
+            {el.harness === 'pi' ? 'pi' : 'claude'}
+          </span>
+        )}
         {el.kind === 'agent' && <AgentMeter id={sessionId} />}
         <span className="widget__bar-spacer" />
         <div className="widget__actions">
@@ -423,7 +428,7 @@ export function WidgetFrame({
           {el.kind === 'web' && <WebBody el={el} active={active} />}
           {el.kind === 'video' && <VideoBody el={el} active={active} />}
           {el.kind === 'mediainfo' && <MediaInfoBody el={el} />}
-          {el.kind === 'claude' && <ClaudeBody el={el} />}
+          {el.kind === 'claude' && <KnowledgeGraphBody el={el} />}
           {isTerminal && (
             <TerminalBody
               workspaceId={workspaceId}
@@ -492,23 +497,29 @@ function AgentDot({ id }: { id: string }) {
   return <span className={`agent-dot agent-dot--${status}`} title={title} />
 }
 
-// Compact activity meter: settled runs / model turns · active time · scraped cost.
-function fmtMeter(m: AgentMetrics): string {
+// Compact activity meter: settled runs / model turns · active time · context · estimated cost.
+function fmtMeter(m: AgentMetrics, piUsage?: PiSessionUsage): string {
+  const context = piUsage?.context
   const time =
     m.activeMs >= 60000
       ? `${Math.round(m.activeMs / 60000)}m`
       : `${Math.round(m.activeMs / 1000)}s`
   const parts = [`${m.runs}r/${m.turns}t`, time]
   if (m.failedRuns || m.abortedRuns) parts.push(`!${m.failedRuns + m.abortedRuns}`)
-  if (m.costUsd != null) parts.push(`$${m.costUsd.toFixed(2)}`)
+  if (context) parts.push(context.percent == null ? 'ctx ?' : `ctx ${Math.round(context.percent)}%`)
+  if (m.costUsd != null) parts.push(`${piUsage ? '~' : ''}$${m.costUsd.toFixed(2)}`)
   return parts.join(' · ')
 }
 function AgentMeter({ id }: { id: string }) {
   const m = useAgents((s) => s.metrics[id])
-  if (!m || (m.runs === 0 && m.turns === 0 && m.costUsd == null)) return null
+  const piUsage = useAgents((s) => s.piUsage[id])
+  if (!m || (m.runs === 0 && m.turns === 0 && m.costUsd == null && !piUsage)) return null
+  const title = piUsage
+    ? 'settled runs / model turns · active time · current context (unknown after compaction until Pi reports it) · Pi-estimated session cost'
+    : 'settled runs / model turns · active time · failures · Claude-reported cost'
   return (
-    <span className="widget__meter" title="settled runs / model turns · active time · failures · cost">
-      {fmtMeter(m)}
+    <span className="widget__meter" title={title}>
+      {fmtMeter(m, piUsage)}
     </span>
   )
 }

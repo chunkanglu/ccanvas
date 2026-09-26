@@ -1,10 +1,19 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useStore, selectActive } from '../store/workspace'
 import type { AgentWizardCtx } from '../store/workspace'
 import { AGENT_COLORS, claudeColorName } from '../lib/types'
 import type { AgentHarness, AgentThinkingLevel, WidgetElement } from '../lib/types'
 import { agentRuntimeId, renameSession, sendTo, isLive } from '../lib/agents'
 import { IconAgent } from './icons'
+import {
+  getPiLauncherStatus,
+  loadPiLaunchProfiles,
+  piLaunchProfileLabel,
+  PI_SETUP_GUIDANCE,
+  rememberPiLaunchProfile,
+  type PiLauncherStatus,
+  type PiLaunchProfile,
+} from '../lib/pi-launch'
 
 const MODELS = ['default', 'opus', 'sonnet', 'haiku']
 type ThinkingChoice = 'default' | AgentThinkingLevel
@@ -22,6 +31,7 @@ export function AgentWizard() {
 
 function Wizard({ ctx }: { ctx: AgentWizardCtx }) {
   const close = useStore((s) => s.closeAgentWizard)
+  const openAgentWizard = useStore((s) => s.openAgentWizard)
   const spawnWidget = useStore((s) => s.spawnWidget)
   const mutateElement = useStore((s) => s.mutateElement)
   const beginHistory = useStore((s) => s.beginHistory)
@@ -32,18 +42,51 @@ function Wizard({ ctx }: { ctx: AgentWizardCtx }) {
     : undefined
   const editing = !!existing
 
-  const [harness, setHarness] = useState<AgentHarness>(existing?.harness ?? ctx.harness ?? 'claude')
+  const [harness, setHarness] = useState<AgentHarness>(existing?.harness ?? ctx.harness ?? 'pi')
   const [name, setName] = useState(existing?.title ?? ctx.title ?? '')
-  const [color, setColor] = useState(existing?.color ?? DEFAULT_COLOR)
-  const [provider, setProvider] = useState(existing?.provider ?? '')
+  const [color, setColor] = useState(existing?.color ?? ctx.color ?? DEFAULT_COLOR)
+  const [provider, setProvider] = useState(existing?.provider ?? ctx.provider ?? '')
   const [model, setModel] = useState(existing?.model ?? ctx.model ?? (harness === 'claude' ? 'default' : ''))
-  const [thinking, setThinking] = useState<ThinkingChoice>(existing?.thinkingLevel ?? 'default')
+  const [thinking, setThinking] = useState<ThinkingChoice>(existing?.thinkingLevel ?? ctx.thinkingLevel ?? 'default')
   const [skip, setSkip] = useState(existing?.skipPermissions ?? false)
   const [prompt, setPrompt] = useState(
     (existing?.harness === 'pi' ? existing.promptDraft : existing?.agentPrompt)
       ?? ctx.agentPrompt
       ?? '',
   )
+
+  const [profiles] = useState<PiLaunchProfile[]>(() => loadPiLaunchProfiles())
+  const [launcher, setLauncher] = useState<PiLauncherStatus>()
+  useEffect(() => {
+    if (harness !== 'pi' || editing) return
+    let alive = true
+    void getPiLauncherStatus(true).then(status => {
+      if (alive) setLauncher(status)
+    })
+    return () => { alive = false }
+  }, [editing, harness])
+
+  const applyProfile = (profile: PiLaunchProfile) => {
+    setProvider(profile.provider ?? '')
+    setModel(profile.model ?? '')
+    setThinking(profile.thinkingLevel ?? 'default')
+  }
+
+  // Copy only nonsecret launch context. Transcript and permission state stay Claude-owned.
+  const createPiFromClaude = () => {
+    if (!existing || existing.harness === 'pi') return
+    close()
+    openAgentWizard({
+      x: existing.x + existing.w + 360,
+      y: existing.y + existing.h / 2,
+      harness: 'pi',
+      title: `${existing.title || 'agent'} (Pi)`,
+      color: existing.color,
+      cwd: existing.cwd,
+      worktree: existing.worktree,
+      agentPrompt: existing.agentPrompt,
+    })
+  }
 
   const folder = ctx.worktree
     ? `worktree · ${ctx.worktree}`
@@ -79,6 +122,13 @@ function Wizard({ ctx }: { ctx: AgentWizardCtx }) {
         if (harness === 'claude') sendTo(runtimeId, `/color ${claudeColorName(color)}\r`)
       }
     } else {
+      if (harness === 'pi') {
+        rememberPiLaunchProfile({
+          provider: provider.trim() || undefined,
+          model: cleanModel,
+          thinkingLevel: thinking === 'default' ? undefined : thinking,
+        })
+      }
       spawnWidget('agent', ctx.x, ctx.y, {
         title,
         color,
@@ -117,7 +167,7 @@ function Wizard({ ctx }: { ctx: AgentWizardCtx }) {
 
         <label className="wiz__label">Harness</label>
         <div className="wiz__seg">
-          {(['claude', 'pi'] as AgentHarness[]).map((value) => (
+          {(['pi', 'claude'] as AgentHarness[]).map((value) => (
             <button
               key={value}
               className={`wiz__seg-btn${harness === value ? ' wiz__seg-btn--active' : ''}`}
@@ -129,7 +179,7 @@ function Wizard({ ctx }: { ctx: AgentWizardCtx }) {
                 setSkip(false)
               }}
             >
-              {value}
+              {value === 'claude' ? 'claude (legacy)' : value}
             </button>
           ))}
         </div>
@@ -191,6 +241,30 @@ function Wizard({ ctx }: { ctx: AgentWizardCtx }) {
           </>
         ) : (
           <>
+            {!editing && launcher && !launcher.available && (
+              <div className="wiz__warning" role="alert">
+                <b>Pi launcher unavailable</b>
+                <span>{launcher.error}</span>
+                <span>{PI_SETUP_GUIDANCE}</span>
+              </div>
+            )}
+            {!editing && profiles.length > 0 && (
+              <>
+                <label className="wiz__label">Recent Pi launch profiles</label>
+                <div className="wiz__profiles">
+                  {profiles.map(profile => (
+                    <button
+                      key={piLaunchProfileLabel(profile)}
+                      className="wiz__profile"
+                      title="Use this nonsecret provider/model/thinking default"
+                      onClick={() => applyProfile(profile)}
+                    >
+                      {piLaunchProfileLabel(profile)}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
             <label className="wiz__label">Provider (optional)</label>
             <input
               className="wiz__input"
@@ -232,6 +306,16 @@ function Wizard({ ctx }: { ctx: AgentWizardCtx }) {
               onChange={(e) => setPrompt(e.target.value)}
             />
           </>
+        )}
+
+        {editing && existing?.harness !== 'pi' && (
+          <button
+            className="wiz__handoff"
+            title="Open a new Pi agent with this title, color, folder and prompt as a draft. No transcript or permission setting is migrated."
+            onClick={createPiFromClaude}
+          >
+            Create Pi agent from this configuration
+          </button>
         )}
 
         <div className="wiz__actions">

@@ -18,6 +18,7 @@ import type {
 import { registerTransport, unregisterTransport, useAgents, ensureNotifyPermission, looksLikePrompt, notify } from '../lib/agents'
 import { useStore, selectActive } from '../store/workspace'
 import { onAgentRunSettled } from '../lib/flow'
+import { PI_SETUP_GUIDANCE } from '../lib/pi-launch'
 import { onStructuredToolEvent } from '../lib/tracker'
 import {
   appendPiDraft,
@@ -200,6 +201,9 @@ export function PiTerminalBody({ workspaceId, el, active, visible = true }: Prop
         setError(message)
         useAgents.getState().setStatus(runtimeId, 'off')
         terminal.writeln(`\r\n\x1b[31mccanvas Pi runtime: ${message}\x1b[0m`)
+        if (/Pi executable|Pi launcher|launcher program/i.test(message)) {
+          terminal.writeln(`\x1b[33m${PI_SETUP_GUIDANCE}\x1b[0m`)
+        }
       })
     })
 
@@ -213,6 +217,18 @@ export function PiTerminalBody({ workspaceId, el, active, visible = true }: Prop
           setConnection('connected')
           setError(undefined)
         }
+        return
+      }
+      if (event.type === 'stats') {
+        useAgents.getState().setPiUsage(runtimeId, {
+          sessionId: event.sessionId,
+          tokens: event.tokens,
+          costUsd: event.costUsd,
+          assistantMessages: event.assistantMessages,
+          toolCalls: event.toolCalls,
+          context: event.context,
+        })
+        useAgents.getState().setCost(runtimeId, event.costUsd)
         return
       }
       if (event.type === 'queue') {

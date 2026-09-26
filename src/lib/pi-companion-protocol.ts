@@ -60,6 +60,15 @@ export type CompanionEventPayload =
     }
   | { type: 'queue'; pending: boolean }
   | {
+      type: 'stats'
+      sessionId?: string
+      tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number }
+      costUsd: number
+      assistantMessages: number
+      toolCalls: number
+      context?: { tokens: number | null; window: number; percent: number | null }
+    }
+  | {
       type: 'catalog'
       models: PiCompanionModel[]
       thinkingLevels: PiCompanionThinkingLevel[]
@@ -200,6 +209,28 @@ function assertEvent(value: unknown): asserts value is CompanionEventPayload {
     case 'queue':
       if (typeof value.pending !== 'boolean') throw new Error('Invalid companion queue event')
       return
+    case 'stats': {
+      const count = (item: unknown) => typeof item === 'number' && Number.isFinite(item) && item >= 0
+      const tokens = value.tokens
+      if (
+        (value.sessionId !== undefined && !text(value.sessionId, 512))
+        || !object(tokens)
+        || !['input', 'output', 'cacheRead', 'cacheWrite', 'total'].every(key => count(tokens[key]))
+        || !count(value.costUsd)
+        || !integer(value.assistantMessages)
+        || !integer(value.toolCalls)
+      ) throw new Error('Invalid companion stats event')
+      if (value.context !== undefined) {
+        const context = value.context
+        if (
+          !object(context)
+          || !(context.tokens === null || count(context.tokens))
+          || !(typeof context.window === 'number' && Number.isFinite(context.window) && context.window > 0)
+          || !(context.percent === null || count(context.percent))
+        ) throw new Error('Invalid companion stats context')
+      }
+      return
+    }
     case 'catalog': {
       if (!Array.isArray(value.models) || value.models.length > 512
         || !Array.isArray(value.thinkingLevels) || value.thinkingLevels.length > THINKING_LEVELS.length

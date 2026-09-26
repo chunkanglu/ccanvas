@@ -47,6 +47,7 @@ type ProcessRuntime = {
   lifecycleSnapshot?: CompanionEventPayload
   catalogSnapshot?: CompanionEventPayload
   queueSnapshot?: CompanionEventPayload
+  statsSnapshot?: CompanionEventPayload
   nextRun: number
   currentRunId?: string
   currentAssistantText: string
@@ -265,6 +266,7 @@ function connect(runtime: ProcessRuntime): void {
               runtime.catalogSnapshot,
               runtime.lifecycleSnapshot,
               runtime.queueSnapshot,
+              runtime.statsSnapshot,
             ].filter(
               (event): event is CompanionEventPayload => event !== undefined,
             )
@@ -336,6 +338,7 @@ function emit(runtime: ProcessRuntime, event: CompanionEventPayload): void {
   if (payload.type === 'session') runtime.sessionSnapshot = payload
   if (payload.type === 'catalog') runtime.catalogSnapshot = payload
   if (payload.type === 'queue') runtime.queueSnapshot = payload
+  if (payload.type === 'stats') runtime.statsSnapshot = payload
   if (payload.type === 'lifecycle' && (payload.phase === 'agent_start' || payload.phase === 'agent_settled')) {
     runtime.lifecycleSnapshot = payload
   }
@@ -370,6 +373,68 @@ function sessionEvent(ctx: ExtensionContext, phase: 'start' | 'info' | 'shutdown
     name: ctx.sessionManager.getSessionName(),
     model,
     thinkingLevel: ctx.thinkingLevel,
+  }
+}
+
+const usageNumber = (value: unknown): number =>
+  typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0
+
+/**
+ * Mirror Pi 0.84 AgentSession.getSessionStats() accounting. Extensions can read
+ * the same entries/context state, but getSessionStats() itself is not exposed.
+ */
+function statsEvent(ctx: ExtensionContext): CompanionEventPayload {
+  const totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 }
+  let assistantMessages = 0
+  let toolCalls = 0
+  const add = (usage: unknown) => {
+    if (!usage || typeof usage !== 'object') return
+    const value = usage as { input?: unknown; output?: unknown; cacheRead?: unknown; cacheWrite?: unknown; cost?: { total?: unknown } }
+    totals.input += usageNumber(value.input)
+    totals.output += usageNumber(value.output)
+    totals.cacheRead += usageNumber(value.cacheRead)
+    totals.cacheWrite += usageNumber(value.cacheWrite)
+    totals.cost += usageNumber(value.cost?.total)
+  }
+  const manager = ctx.sessionManager as { getEntries?: () => unknown[] }
+  const entries = typeof manager.getEntries === 'function' ? manager.getEntries() : []
+  for (const raw of entries) {
+    if (!raw || typeof raw !== 'object') continue
+    const entry = raw as { type?: string; usage?: unknown; message?: { role?: string; usage?: unknown; content?: unknown } }
+    if ((entry.type === 'branch_summary' || entry.type === 'compaction') && entry.usage) add(entry.usage)
+    if (entry.type !== 'message' || !entry.message) continue
+    if (entry.message.role === 'toolResult' && entry.message.usage) add(entry.message.usage)
+    if (entry.message.role === 'assistant') {
+      assistantMessages += 1
+      if (Array.isArray(entry.message.content)) {
+        toolCalls += entry.message.content.filter(block => (block as { type?: string })?.type === 'toolCall').length
+      }
+      add(entry.message.usage)
+    }
+  }
+  const usage = typeof ctx.getContextUsage === 'function' ? ctx.getContextUsage() : undefined
+  const context = usage && Number.isFinite(usage.contextWindow) && usage.contextWindow > 0
+    ? {
+        tokens: typeof usage.tokens === 'number' && Number.isFinite(usage.tokens) && usage.tokens >= 0 ? usage.tokens : null,
+        window: usage.contextWindow,
+        percent: typeof usage.percent === 'number' && Number.isFinite(usage.percent) && usage.percent >= 0 ? usage.percent : null,
+      }
+    : undefined
+  const sessionId = ctx.sessionManager.getSessionId?.()
+  return {
+    type: 'stats',
+    ...(sessionId ? { sessionId: truncateUtf8(sessionId, 512) } : {}),
+    tokens: {
+      input: totals.input,
+      output: totals.output,
+      cacheRead: totals.cacheRead,
+      cacheWrite: totals.cacheWrite,
+      total: totals.input + totals.output + totals.cacheRead + totals.cacheWrite,
+    },
+    costUsd: totals.cost,
+    assistantMessages,
+    toolCalls,
+    ...(context ? { context } : {}),
   }
 }
 
@@ -524,6 +589,7 @@ export default function companion(pi: ExtensionAPI): void {
     emit(runtime, sessionEvent(next, 'start', event.reason))
     emit(runtime, catalogEvent(pi, next))
     emit(runtime, queueEvent(next))
+    emit(runtime, statsEvent(next))
   })
   pi.on('session_info_changed', (_event, next) => {
     remember(next)
@@ -532,11 +598,18 @@ export default function companion(pi: ExtensionAPI): void {
   pi.on('session_tree', (_event, next) => {
     remember(next)
     emit(runtime, sessionEvent(next, 'info'))
+    emit(runtime, statsEvent(next))
+  })
+  pi.on('session_compact', (_event, next) => {
+    remember(next)
+    emit(runtime, sessionEvent(next, 'info'))
+    emit(runtime, statsEvent(next))
   })
   pi.on('model_select', (_event, next) => {
     remember(next)
     emit(runtime, sessionEvent(next, 'info'))
     emit(runtime, catalogEvent(pi, next))
+    emit(runtime, statsEvent(next))
   })
   pi.on('thinking_level_select', (_event, next) => {
     remember(next)
@@ -579,6 +652,7 @@ export default function companion(pi: ExtensionAPI): void {
     emit(runtime, sessionEvent(next, 'info'))
     emit(runtime, catalogEvent(pi, next))
     emit(runtime, queueEvent(next))
+    emit(runtime, statsEvent(next))
   })
   pi.on('turn_start', (event, next) => {
     remember(next)
@@ -587,6 +661,7 @@ export default function companion(pi: ExtensionAPI): void {
   pi.on('turn_end', (event, next) => {
     remember(next)
     emit(runtime, { type: 'lifecycle', phase: 'turn_end', turnIndex: event.turnIndex })
+    emit(runtime, statsEvent(next))
   })
   pi.on('message_update', (event, next) => {
     remember(next)

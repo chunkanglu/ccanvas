@@ -6,6 +6,7 @@ import { downloadPng, downloadSvg } from '../lib/export'
 import { runCommand, joinPath } from '../lib/backend'
 import { agentRuntimeId, sendPrompt, isLive } from '../lib/agents'
 import type { WidgetElement, WidgetKind } from '../lib/types'
+import { loadPiLaunchProfiles, piLaunchProfileLabel } from '../lib/pi-launch'
 
 /** The focused/selected agent or terminal a prompt insert should target. */
 function injectTarget(): { widgetId: string; runtimeId: string } | null {
@@ -33,7 +34,7 @@ const worldCenter = () =>
 type Item = { id: string; label: string; hint?: string; group: string; run: () => void }
 
 const SPAWNABLE: { kind: WidgetKind; label: string }[] = [
-  { kind: 'agent', label: 'Claude agent' },
+  { kind: 'agent', label: 'Pi agent' },
   { kind: 'terminal', label: 'Terminal' },
   { kind: 'files', label: 'File tree' },
   { kind: 'diff', label: 'Git diff' },
@@ -51,8 +52,6 @@ const SPAWNABLE: { kind: WidgetKind; label: string }[] = [
   { kind: 'video', label: 'Video player' },
   { kind: 'note', label: 'Note' },
 ]
-
-const AGENT_MODELS = ['opus', 'sonnet', 'haiku']
 
 export function CommandPalette() {
   const open = useStore((s) => s.paletteOpen)
@@ -83,23 +82,33 @@ export function CommandPalette() {
         group: 'Create',
         run: () => {
           const w = worldCenter()
-          if (kind === 'agent') s.openAgentWizard({ x: w.x, y: w.y })
+          if (kind === 'agent') s.openAgentWizard({ x: w.x, y: w.y, harness: 'pi' })
           else s.spawnWidget(kind, w.x, w.y)
         },
       })
     }
-    for (const model of AGENT_MODELS) {
+    for (const [index, profile] of loadPiLaunchProfiles().entries()) {
       out.push({
-        id: `agent-${model}`,
-        label: `New agent (${model})`,
-        hint: 'model',
+        id: `pi-profile-${index}`,
+        label: `New Pi agent (${piLaunchProfileLabel(profile)})`,
+        hint: 'recent profile',
         group: 'Create',
         run: () => {
           const w = worldCenter()
-          s.openAgentWizard({ x: w.x, y: w.y, model })
+          s.openAgentWizard({ x: w.x, y: w.y, harness: 'pi', ...profile })
         },
       })
     }
+    out.push({
+      id: 'agent-claude-legacy',
+      label: 'New: Claude agent (legacy)',
+      hint: 'legacy',
+      group: 'Create',
+      run: () => {
+        const w = worldCenter()
+        s.openAgentWizard({ x: w.x, y: w.y, harness: 'claude' })
+      },
+    })
     if (ws.dir) {
       const dir = ws.dir
       const gitCmds: Array<[string, string, string[]]> = [
@@ -131,7 +140,7 @@ export function CommandPalette() {
       })
       out.push({
         id: 'agent-worktree',
-        label: 'New agent in a git worktree…',
+        label: 'New Pi agent in a git worktree…',
         hint: 'isolated',
         group: 'Create',
         run: async () => {
@@ -151,6 +160,7 @@ export function CommandPalette() {
           s.openAgentWizard({
             x: w.x,
             y: w.y,
+            harness: 'pi',
             cwd: wtPath,
             worktree: branch,
             title: `agent · ${branch}`,

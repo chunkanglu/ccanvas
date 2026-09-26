@@ -87,7 +87,7 @@ export function TopBar() {
         </button>
         <button
           className="tb-icon"
-          title="Claude workspace — open the knowledge-graph map in a new tab"
+          title="Knowledge graph — open a read-only Markdown or legacy Claude-memory graph"
           onClick={() => openClaudeWorkspace()}
         >
           <IconClaude />

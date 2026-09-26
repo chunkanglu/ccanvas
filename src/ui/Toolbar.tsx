@@ -50,7 +50,7 @@ const SHAPE_ITEMS: FlyItem[] = [
 const SHAPE_KEYS = SHAPE_ITEMS.map((s) => s.key)
 
 const PRIMARY_WIDGETS: { kind: WidgetKind; Icon: IconCmp; label: string }[] = [
-  { kind: 'agent', Icon: IconAgent, label: 'Claude agent' },
+  { kind: 'agent', Icon: IconAgent, label: 'Pi agent' },
   { kind: 'terminal', Icon: IconTerminal, label: 'Terminal' },
 ]
 // Code panels collapse into one flyout.
@@ -172,7 +172,7 @@ export function Toolbar() {
     const y = world.y + off
     // agents go through the wizard so they're configured before they launch
     if (kind === 'agent') {
-      openAgentWizard({ x, y })
+      openAgentWizard({ x, y, harness: 'pi' })
       return
     }
     spawnWidget(kind, x, y)

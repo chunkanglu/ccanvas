@@ -2,16 +2,18 @@
 
 Personal fork of [DevoidSloth/ccanvas](https://github.com/DevoidSloth/ccanvas),
 maintained at [chunkanglu/ccanvas](https://github.com/chunkanglu/ccanvas).
-**Phases 0–4 are accepted. Pi now has native-TUI-compatible agent UX,
-acknowledged provider-neutral flows, and structured file tracking; Claude remains
-the new-agent default until Phase 5 parity/default gates pass.**
+**Phases 0–4 are accepted; Phase 5 makes Pi the default for new agents.**
+Pi agents keep the native Pi TUI while ccanvas adds an acknowledged composer,
+provider-neutral flows, structured tracking, scoped session usage, and explicit
+knowledge-graph sources. Existing Claude agents stay Claude.
 
 - App identity: **ccanvas Pi**, `io.github.chunkanglu.ccanvas-pi`.
 - Development UI: `127.0.0.1:5174`; preview: `127.0.0.1:4174`; optional local
   backend: `127.0.0.1:7532`. Settings use `ccanvas-pi:*`, not upstream's keys.
 - `fork.config.json` is the shared isolation config. Its `piLauncher` records
   `PI_TOOLS_IDLE_TIMEOUT_MS=6000000 pi` for probes and the managed native runtime.
-  It does **not** flip the default away from Claude.
+  New-agent entry points use it by default; ccanvas never installs Pi and never
+  silently launches Claude if Pi is unavailable.
 - `npm run test:stage0` uses existing dependencies; `npm run probe:pi` is an
   opt-in, no-LLM RPC startup probe. `npm run probe:pi:tui` checks native custom UI
   and synthetic session lifecycle; `npm run probe:pi:companion` checks the phase 2
@@ -22,13 +24,14 @@ the new-agent default until Phase 5 parity/default gates pass.**
   [Phase 2 runtime status](docs/phase2-runtime.md) ·
   [Phase 3 native agent UX](docs/phase3-agent-ux.md) ·
   [Phase 4 flows and tracking](docs/phase4-flows-tracking.md) ·
+  [Phase 5 Pi-first defaults, usage and knowledge](docs/phase5-pi-first.md) ·
   [Installed-extension compatibility findings](docs/pi-compatibility.md) ·
   [Approved TUI direction and probe](docs/pi-tui-probe.md).
 - Fork releases are manual `pi-v*` draft prereleases; upstream `v*` tags do not
   publish a fork release. No packages or user configuration are auto-installed.
 
-The upstream feature documentation follows. Until integration lands, descriptions
-of Claude agent behavior below remain accurate. Use copies of `.ccnvs` files when
+The upstream feature documentation follows. Its Claude-agent descriptions apply to
+legacy Claude agents; new agents default to Pi in this fork. Use copies of `.ccnvs` files when
 trying the fork: explicit file saves still write to the selected workspace folder.
 
 ## Local macOS rebuild + Spotlight installation

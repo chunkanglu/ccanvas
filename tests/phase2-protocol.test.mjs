@@ -120,6 +120,15 @@ test('malformed, oversized and capability-leaking frames fail closed', () => {
   assert.throws(() => decode({ ...runtime, type: 'control', requestId: 'x', control: { type: 'configure', activeTools: ['read'], tool: { name: 'edit', active: true } } }), /cannot combine/)
   assert.throws(() => decode({ ...runtime, type: 'event', seq: 4, event: { type: 'catalog', models: [], thinkingLevels: ['extreme'], tools: [] } }), /thinking/)
   assert.throws(() => decode({ ...runtime, type: 'event', seq: 5, event: { type: 'queue', pending: 'yes' } }), /queue/)
+  const stats = {
+    type: 'stats', sessionId: 'session-1',
+    tokens: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, total: 10 },
+    costUsd: 0.25, assistantMessages: 1, toolCalls: 0,
+    context: { tokens: null, window: 1000, percent: null },
+  }
+  assert.equal(decode({ ...runtime, type: 'event', seq: 11, event: stats }).event.costUsd, 0.25)
+  assert.throws(() => decode({ ...runtime, type: 'event', seq: 12, event: { ...stats, costUsd: -1 } }), /stats/)
+  assert.throws(() => decode({ ...runtime, type: 'event', seq: 13, event: { ...stats, context: { tokens: 1, window: 0, percent: 1 } } }), /stats context/)
   assert.throws(() => decode({ ...runtime, type: 'event', seq: 6, event: { type: 'lifecycle', phase: 'agent_settled', runId: '', outcome: 'completed' } }), /run id/)
   assert.throws(() => decode({ ...runtime, type: 'event', seq: 7, event: { type: 'lifecycle', phase: 'agent_settled', runId: '1:1', assistantText: 'x'.repeat(65 * 1024) } }), /assistant text/)
   assert.throws(() => decode({ ...runtime, type: 'event', seq: 8, event: { type: 'tool', phase: 'end', callId: 'c', name: 'read' } }), /tool error/)

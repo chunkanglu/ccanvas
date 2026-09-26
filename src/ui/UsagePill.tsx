@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { getUsage, type Usage } from '../lib/backend'
 import { storageKey } from '../lib/fork'
+import { aggregatePiUsage, useAgents } from '../lib/agents'
 
 // per-window token budget (tokens). 0 = no bar, just show usage + reset.
 const LIMIT_KEY = storageKey('usageLimit')
@@ -28,6 +29,8 @@ export function UsagePill() {
   const [limit, setLimit] = useState<number>(() => Number(localStorage.getItem(LIMIT_KEY)) || 0)
   const [, tick] = useState(0) // re-render to refresh the countdown
   const ref = useRef<HTMLDivElement>(null)
+  const piUsage = useAgents((s) => s.piUsage)
+  const pi = useMemo(() => aggregatePiUsage(piUsage), [piUsage])
 
   useEffect(() => {
     let alive = true
@@ -54,10 +57,11 @@ export function UsagePill() {
     return () => window.removeEventListener('mousedown', onDown)
   }, [open])
 
-  if (!u || !u.hasData) return null
+  const claude = u?.hasData ? u : null
+  if (!claude && pi.sessions === 0) return null
 
-  const hasLimit = limit > 0
-  const pct = hasLimit ? Math.min(100, (u.activeTokens / limit) * 100) : 0
+  const hasLimit = !!claude && limit > 0
+  const pct = claude && hasLimit ? Math.min(100, (claude.activeTokens / limit) * 100) : 0
   const hot = hasLimit && pct >= 85
 
   return (
@@ -66,74 +70,113 @@ export function UsagePill() {
         className={`tb-btn usage__pill${hot ? ' usage__pill--hot' : ''}`}
         onClick={() => setOpen((v) => !v)}
         title={
-          hasLimit
-            ? 'Claude Code usage — % of your window budget used'
-            : 'Claude Code usage — set a window budget to see % used'
+          pi.sessions
+            ? 'Attached Pi sessions — Pi-estimated cost and tokens; not an account quota'
+            : hasLimit
+              ? 'Claude Code (legacy) — % of your configured 5h window budget'
+              : 'Claude Code (legacy) usage estimate'
         }
       >
-        {hasLimit && (
-          <span className="usage__bar">
-            <span className="usage__bar-fill" style={{ width: pct + '%' }} />
-          </span>
-        )}
-        {/* show % of the window budget used; without a budget there's nothing to
-            take a percentage of, so fall back to the raw token count */}
-        <span className="usage__num">
-          {hasLimit ? `${Math.round(pct)}%` : fmtTokens(u.activeTokens)}
-        </span>
-        {u.resetMs && <span className="usage__reset">· {fmtCountdown(u.resetMs)}</span>}
+        {pi.sessions > 0 ? (
+          <span className="usage__num">π ~${pi.costUsd.toFixed(2)}</span>
+        ) : claude ? (
+          <>
+            {hasLimit && (
+              <span className="usage__bar">
+                <span className="usage__bar-fill" style={{ width: pct + '%' }} />
+              </span>
+            )}
+            <span className="usage__num">
+              {hasLimit ? `${Math.round(pct)}%` : fmtTokens(claude.activeTokens)}
+            </span>
+            {claude.resetMs && <span className="usage__reset">· {fmtCountdown(claude.resetMs)}</span>}
+          </>
+        ) : null}
       </button>
 
       {open && (
         <div className="usage__pop">
-          <div className="usage__title">Claude usage</div>
-          {hasLimit && (
-            <div className="usage__row">
-              <span>Window used</span>
-              <b>{Math.round(pct)}%</b>
-            </div>
+          {pi.sessions > 0 && (
+            <>
+              <div className="usage__title">Attached Pi sessions</div>
+              <div className="usage__row">
+                <span>Sessions</span>
+                <b>{pi.sessions}</b>
+              </div>
+              <div className="usage__row">
+                <span>Tokens</span>
+                <b>{fmtTokens(pi.tokens)} tok</b>
+              </div>
+              <div className="usage__row">
+                <span>Estimated cost</span>
+                <b>~${pi.costUsd.toFixed(2)}</b>
+              </div>
+              {pi.unknownContext > 0 && (
+                <div className="usage__row">
+                  <span>Context unknown</span>
+                  <b>{pi.unknownContext}</b>
+                </div>
+              )}
+              <div className="usage__hint">
+                Pi session totals for agents attached in this app, counted once per
+                session. Costs are Pi model-price estimates, not bills or account
+                limits. Pi has no ccanvas-managed reset window.
+              </div>
+            </>
           )}
-          <div className="usage__row">
-            <span>This 5h window</span>
-            <b>
-              {fmtTokens(u.activeTokens)}
-              {hasLimit ? ` / ${fmtTokens(limit)}` : ''} tok
-            </b>
-          </div>
-          {u.resetMs && (
-            <div className="usage__row">
-              <span>Resets</span>
-              <b>
-                {fmtTime(u.resetMs)} · {fmtCountdown(u.resetMs)}
-              </b>
-            </div>
+          {pi.sessions > 0 && claude && <div className="usage__sep" />}
+          {claude && (
+            <>
+              <div className="usage__title">Claude Code (legacy)</div>
+              {hasLimit && (
+                <div className="usage__row">
+                  <span>Window used</span>
+                  <b>{Math.round(pct)}%</b>
+                </div>
+              )}
+              <div className="usage__row">
+                <span>Estimated 5h window</span>
+                <b>
+                  {fmtTokens(claude.activeTokens)}
+                  {hasLimit ? ` / ${fmtTokens(limit)}` : ''} tok
+                </b>
+              </div>
+              {claude.resetMs && (
+                <div className="usage__row">
+                  <span>Estimated reset</span>
+                  <b>
+                    {fmtTime(claude.resetMs)} · {fmtCountdown(claude.resetMs)}
+                  </b>
+                </div>
+              )}
+              <div className="usage__row">
+                <span>Last 24h</span>
+                <b>{fmtTokens(claude.dayTokens)} tok</b>
+              </div>
+              <div className="usage__sep" />
+              <label className="usage__row usage__limit">
+                <span>Window limit</span>
+                <input
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={limit ? Math.round(limit / 1_000_000) : ''}
+                  placeholder="off"
+                  onChange={(e) => {
+                    const tok = Math.max(0, Number(e.target.value) || 0) * 1_000_000
+                    setLimit(tok)
+                    if (tok) localStorage.setItem(LIMIT_KEY, String(tok))
+                    else localStorage.removeItem(LIMIT_KEY)
+                  }}
+                />
+                <span className="usage__unit">M</span>
+              </label>
+              <div className="usage__hint">
+                Estimated from Claude Code local session logs. Set a per-window
+                budget to show <b>% used</b>.
+              </div>
+            </>
           )}
-          <div className="usage__row">
-            <span>Last 24h</span>
-            <b>{fmtTokens(u.dayTokens)} tok</b>
-          </div>
-          <div className="usage__sep" />
-          <label className="usage__row usage__limit">
-            <span>Window limit</span>
-            <input
-              type="number"
-              min={0}
-              step={1}
-              value={limit ? Math.round(limit / 1_000_000) : ''}
-              placeholder="off"
-              onChange={(e) => {
-                const tok = Math.max(0, Number(e.target.value) || 0) * 1_000_000
-                setLimit(tok)
-                if (tok) localStorage.setItem(LIMIT_KEY, String(tok))
-                else localStorage.removeItem(LIMIT_KEY)
-              }}
-            />
-            <span className="usage__unit">M</span>
-          </label>
-          <div className="usage__hint">
-            Set your plan's per-window token budget to show <b>% used</b> and a
-            fill bar. Read from Claude Code's local session logs.
-          </div>
         </div>
       )}
     </div>
