@@ -2,7 +2,13 @@
 
 ## Status
 
-In progress on `fork/phase5-pi-first`.
+Implemented and accepted on `fork/phase5-pi-first`.
+
+Installed-app acceptance passed Pi-first creation paths, Claude legacy preservation and explicit creation, Claude-to-Pi configuration handoff, recent launch profiles, usage/context scope, knowledge-graph sources, and normal Pi workflow regression. Acceptance found two defects, both fixed and retested: git-worktree creation no longer depends on WKWebView's unsupported `window.prompt`, and the graph empty state no longer covers source controls.
+
+Automated evidence: Stage 0 10, Phase 1 3, Phase 2 17, Phase 3 3, Phase 4 9, Phase 5 9, installer 10, Rust 13, TypeScript/Vite build, Rust fmt/clippy, actual no-model companion probe including stats, and diff checks.
+
+Known upstream limitation outside this phase: template naming, checkpoint labels, and Git-panel repo/branch prompts still use `window.prompt`/`confirm` and may not work in the macOS app.
 
 ## Decisions
 
