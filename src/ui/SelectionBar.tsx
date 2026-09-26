@@ -20,8 +20,9 @@ const isAgentEl = (e?: CanvasElement) =>
 const COND_LABEL: Record<FlowCondition, string> = {
   always: 'on finish',
   success: 'on success',
-  failure: 'on failure',
+  failure: 'on text failure',
   match: 'on match',
+  'runtime-error': 'on run error',
 }
 
 // Floating contextual toolbar for the current selection: arrange, align,
@@ -184,6 +185,7 @@ export function SelectionBar() {
       {loneArrow && (
         <div className="selbar__row selbar__broadcast">
           <input
+            key={`label:${loneArrow.id}`}
             className="selbar__bc-input"
             placeholder="connector label…"
             defaultValue={loneArrow.label ?? ''}
@@ -243,7 +245,7 @@ export function SelectionBar() {
             <>
               <div className="selbar__flow-row">
                 <span className="selbar__flow-tag">run when</span>
-                {(['always', 'success', 'failure', 'match'] as FlowCondition[]).map(
+                {(['always', 'success', 'failure', 'match', 'runtime-error'] as FlowCondition[]).map(
                   (c) => (
                     <button
                       key={c}
@@ -254,8 +256,10 @@ export function SelectionBar() {
                           : c === 'success'
                             ? `Fire when ${fromTitle}'s output reads as success`
                             : c === 'failure'
-                              ? `Fire when ${fromTitle}'s output reads as failure`
-                              : `Fire when ${fromTitle}'s output matches a regex`
+                              ? `Fire when ${fromTitle}'s completed output reads as failure`
+                              : c === 'runtime-error'
+                                ? `Fire only when ${fromTitle}'s run fails`
+                                : `Fire when ${fromTitle}'s output matches a regex`
                       }
                       onClick={() => patchFlow({ when: c }, true)}
                     >
@@ -267,6 +271,7 @@ export function SelectionBar() {
 
               {(flow.when === 'match' || !!flow.pattern) && (
                 <input
+                  key={`pattern:${loneArrow!.id}`}
                   className="selbar__bc-input selbar__flow-pattern"
                   placeholder={
                     flow.when === 'match'
@@ -282,6 +287,7 @@ export function SelectionBar() {
               )}
 
               <textarea
+                key={`prompt:${loneArrow!.id}`}
                 className="selbar__flow-prompt"
                 placeholder={`prompt for ${toTitle} — leave empty to pipe ${fromTitle}'s output, or embed it with {{output}}`}
                 defaultValue={flow.prompt ?? ''}

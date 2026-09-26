@@ -21,7 +21,7 @@ const frames = [
   { ...runtime, type: 'hello', token, pid: 123 },
   { ...runtime, type: 'welcome', replayFrom: 0 },
   { ...runtime, type: 'event', seq: 0, event: { type: 'session', phase: 'start', sessionId: 'session-1', sessionFile: '/tmp/session.jsonl' } },
-  { ...runtime, type: 'event', seq: 1, event: { type: 'tool', phase: 'start', callId: 'call-1', name: 'read', input: { path: 'safe-fixture' } } },
+  { ...runtime, type: 'event', seq: 1, event: { type: 'tool', phase: 'start', callId: 'call-1', name: 'read', input: { path: 'safe-fixture' }, resolvedPath: '/tmp/safe-fixture' } },
   { ...runtime, type: 'control', requestId: 'request-1', control: { type: 'prompt', text: 'hello', deliverAs: 'followUp' } },
   { ...runtime, type: 'result', requestId: 'request-1', ok: true },
   { ...runtime, type: 'ping', nonce: 'host-1' },
@@ -29,6 +29,13 @@ const frames = [
   { ...runtime, type: 'event', seq: 2, event: { type: 'queue', pending: true } },
   {
     ...runtime, type: 'event', seq: 3,
+    event: {
+      type: 'lifecycle', phase: 'agent_settled', runId: '7:3', outcome: 'completed',
+      assistantText: 'STATUS: OK', truncated: false,
+    },
+  },
+  {
+    ...runtime, type: 'event', seq: 4,
     event: {
       type: 'catalog',
       models: [{ provider: 'synthetic', id: 'model-1', name: 'Model One' }],
@@ -113,6 +120,11 @@ test('malformed, oversized and capability-leaking frames fail closed', () => {
   assert.throws(() => decode({ ...runtime, type: 'control', requestId: 'x', control: { type: 'configure', activeTools: ['read'], tool: { name: 'edit', active: true } } }), /cannot combine/)
   assert.throws(() => decode({ ...runtime, type: 'event', seq: 4, event: { type: 'catalog', models: [], thinkingLevels: ['extreme'], tools: [] } }), /thinking/)
   assert.throws(() => decode({ ...runtime, type: 'event', seq: 5, event: { type: 'queue', pending: 'yes' } }), /queue/)
+  assert.throws(() => decode({ ...runtime, type: 'event', seq: 6, event: { type: 'lifecycle', phase: 'agent_settled', runId: '', outcome: 'completed' } }), /run id/)
+  assert.throws(() => decode({ ...runtime, type: 'event', seq: 7, event: { type: 'lifecycle', phase: 'agent_settled', runId: '1:1', assistantText: 'x'.repeat(65 * 1024) } }), /assistant text/)
+  assert.throws(() => decode({ ...runtime, type: 'event', seq: 8, event: { type: 'tool', phase: 'end', callId: 'c', name: 'read' } }), /tool error/)
+  assert.throws(() => decode({ ...runtime, type: 'event', seq: 9, event: { type: 'tool', phase: 'start', callId: 'c', name: 'read', resolvedPath: 'relative' } }), /resolved path/)
+  assert.throws(() => decode({ ...runtime, type: 'event', seq: 10, event: { type: 'tool', phase: 'end', callId: 'c', name: 'read', isError: false, resolvedPath: '/tmp/a' } }), /resolved path/)
   assert.throws(() => protocol.decodePiCompanionFrame('x'.repeat(protocol.PI_COMPANION_MAX_FRAME_BYTES + 1)), /bounds/)
 
   const decoder = new protocol.PiCompanionFrameDecoder()

@@ -27,12 +27,13 @@ function Draw({ el }: { el: DrawElement }) {
 }
 
 // condition → glyph + short word for the on-canvas flow badge
-const FLOW_GLYPH = { always: '⚡', success: '✓', failure: '✗', match: '~' } as const
+const FLOW_GLYPH = { always: '⚡', success: '✓', failure: '✗', match: '~', 'runtime-error': '!' } as const
 const FLOW_WORD = {
   always: 'on finish',
   success: 'on success',
   failure: 'on failure',
   match: 'on match',
+  'runtime-error': 'on run error',
 } as const
 
 function Arrow({ el }: { el: ArrowElement }) {

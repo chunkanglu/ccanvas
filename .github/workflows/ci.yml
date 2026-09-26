@@ -24,7 +24,7 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Fork isolation regression checks
-        run: npm run test:stage0 && npm run test:phase1 && npm run test:phase2 && npm run test:phase3 && npm run test:app-install
+        run: npm run test:stage0 && npm run test:phase1 && npm run test:phase2 && npm run test:phase3 && npm run test:phase4 && npm run test:app-install
       - name: Type-check and build
         run: npm run build
 

@@ -79,9 +79,10 @@ export type ArrowBinding = { id: string; anchor?: { nx: number; ny: number } }
  *  • always   — fire on any turn completion
  *  • success  — output matches the success keywords (or `pattern` if set)
  *  • failure  — output matches the failure keywords (or `pattern` if set)
- *  • match    — output matches `pattern` (a regex)
+ *  • match         — output matches `pattern` (a regex)
+ *  • runtime-error — the authoritative agent run failed (not a text guess)
  */
-export type FlowCondition = 'always' | 'success' | 'failure' | 'match'
+export type FlowCondition = 'always' | 'success' | 'failure' | 'match' | 'runtime-error'
 
 /**
  * Orchestration logic carried by a connector between two agent widgets. The

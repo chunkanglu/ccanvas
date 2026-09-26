@@ -17,7 +17,8 @@ import type {
 } from '../lib/pi-companion-protocol'
 import { registerTransport, unregisterTransport, useAgents, ensureNotifyPermission, looksLikePrompt, notify } from '../lib/agents'
 import { useStore, selectActive } from '../store/workspace'
-import { onAgentTurnComplete } from '../lib/flow'
+import { onAgentRunSettled } from '../lib/flow'
+import { onStructuredToolEvent } from '../lib/tracker'
 import {
   appendPiDraft,
   draftAfterAcknowledgement,
@@ -38,6 +39,7 @@ export function PiTerminalBody({ workspaceId, el, active, visible = true }: Prop
   const draftRef = useRef(el.promptDraft ?? '')
   const workingSince = useRef<number | null>(null)
   const turnIndex = useRef(0)
+  const runId = useRef<string>()
   const turnText = useRef('')
   const textTail = useRef('')
   const ptyTail = useRef('')
@@ -180,10 +182,10 @@ export function PiTerminalBody({ workspaceId, el, active, visible = true }: Prop
         runtimeRef.current = runtime
         transportOwner = registerTransport(runtimeId, {
           send: data => runtime.send(data),
-          prompt: text => runtime.control(managedPiPromptControl(
+          prompt: (text, requestId) => runtime.control(managedPiPromptControl(
             text,
             ['working', 'waiting'].includes(useAgents.getState().status[runtimeId]),
-          )).then(() => undefined),
+          ), requestId).then(() => undefined),
           insertDraft,
           rename: name => runtime.control({ type: 'rename', name }).then(() => undefined),
           kind: 'agent',
@@ -260,23 +262,47 @@ export function PiTerminalBody({ workspaceId, el, active, visible = true }: Prop
         if (event.phase === 'agent_start') {
           if (!replayed) {
             turnIndex.current += 1
+            runId.current = event.runId ?? `legacy:${turnIndex.current}`
             turnText.current = ''
           }
           workingSince.current = replayed ? null : Date.now()
           useAgents.getState().setStatus(runtimeId, 'working')
+        } else if (event.phase === 'turn_end') {
+          if (!replayed) useAgents.getState().recordModelTurn(runtimeId)
         } else if (event.phase === 'agent_settled') {
           const started = workingSince.current
-          if (!replayed && started != null) useAgents.getState().recordTurn(runtimeId, Date.now() - started)
+          const outcome = event.outcome === 'failed' || event.outcome === 'aborted'
+            ? event.outcome
+            : 'completed'
+          if (!replayed && started != null) {
+            useAgents.getState().recordRun(runtimeId, Date.now() - started, outcome)
+          }
           workingSince.current = null
           useAgents.getState().setStatus(runtimeId, 'idle')
           if (!replayed) {
-            void onAgentTurnComplete(el.id, turnIndex.current, turnText.current, workspaceId)
+            void onAgentRunSettled({
+              sourceId: el.id,
+              workspaceId,
+              harness: 'pi',
+              generation: frame.generation,
+              runId: event.runId ?? runId.current ?? `legacy:${turnIndex.current}`,
+              outcome,
+              assistantText: event.assistantText ?? turnText.current,
+              truncated: event.truncated,
+            })
             const store = useStore.getState()
             const activelyViewed = store.activeTabId === workspaceId
               && store.activeWidgetId === el.id
               && document.hasFocus()
             if (!activelyViewed) {
-              notify(el.title || 'Pi agent', event.outcome === 'failed' ? 'run failed' : 'ready')
+              notify(
+                el.title || 'Pi agent',
+                event.outcome === 'failed'
+                  ? 'run failed'
+                  : event.outcome === 'aborted'
+                    ? 'run aborted'
+                    : 'ready',
+              )
             }
           }
         }
@@ -289,8 +315,24 @@ export function PiTerminalBody({ workspaceId, el, active, visible = true }: Prop
         const line = lines[lines.length - 1]?.trim()
         if (line) useAgents.getState().setLastLine(runtimeId, line)
       }
-      if (event.type === 'tool' && event.phase === 'start') {
-        useAgents.getState().setLastLine(runtimeId, `tool · ${event.name}`)
+      if (event.type === 'tool') {
+        onStructuredToolEvent({
+          agentId: el.id,
+          workspaceId,
+          generation: frame.generation,
+          seq: frame.seq,
+          replayed,
+          phase: event.phase,
+          callId: event.callId,
+          name: event.name,
+          input: event.input,
+          isError: event.isError,
+          truncated: event.truncated,
+          resolvedPath: event.resolvedPath,
+        })
+        if (event.phase === 'start') {
+          useAgents.getState().setLastLine(runtimeId, `tool · ${event.name}`)
+        }
       }
     }
 

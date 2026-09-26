@@ -6,6 +6,7 @@ import type { WidgetElement } from '../lib/types'
 import { useStore } from '../store/workspace'
 import { readFile, saveFile, resolvePath, baseName } from '../lib/backend'
 import { IconReload, IconSave } from '../ui/icons'
+import { TRACKED_FILE_CHANGED_EVENT } from '../lib/tracker'
 
 // File editor backed by Monaco — VS Code's editor engine. Syntax highlighting,
 // IntelliSense/completions, find & replace (⌘/Ctrl-F), multi-cursor, folding,
@@ -29,6 +30,7 @@ export function EditorBody({ el, active }: { el: WidgetElement; active: boolean 
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null)
   const monacoRef = useRef<Awaited<ReturnType<typeof import('../lib/monaco').loadMonaco>> | null>(null)
   const loadToken = useRef(0)
+  const dirtyRef = useRef(false)
   // Keep save reachable from Monaco's (one-time-bound) ⌘S command without stale
   // closures over `abs`.
   const saveRef = useRef<() => Promise<void>>(async () => {})
@@ -63,6 +65,21 @@ export function EditorBody({ el, active }: { el: WidgetElement; active: boolean 
   useEffect(() => {
     saveRef.current = save
   }, [save])
+  useEffect(() => {
+    dirtyRef.current = dirty
+  }, [dirty])
+
+  // Agent-tracking refreshes clean viewers after successful structured mutations;
+  // unsaved local edits are never replaced underneath the user.
+  useEffect(() => {
+    if (!ready || !abs) return
+    const refresh = (event: Event) => {
+      const path = (event as CustomEvent<{ path?: unknown }>).detail?.path
+      if (path === abs && !dirtyRef.current) void load()
+    }
+    window.addEventListener(TRACKED_FILE_CHANGED_EVENT, refresh)
+    return () => window.removeEventListener(TRACKED_FILE_CHANGED_EVENT, refresh)
+  }, [abs, load, ready])
 
   // ---- create the editor once the host div exists (and a path is set) ----
   useEffect(() => {

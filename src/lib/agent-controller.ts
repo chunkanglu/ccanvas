@@ -51,7 +51,7 @@ export type AgentRuntimeEvent = AgentRuntimeKey & { seq: number } & (
   | { type: 'assistant-text'; text: string; delta: boolean }
   | { type: 'tool'; callId: string; phase: 'start' | 'update' | 'end'; name: string; input?: unknown; output?: unknown; error?: string }
   | { type: 'ui-request'; requestId: string; method: string; payload: unknown }
-  | { type: 'settled'; outcome: AgentOutcome; text?: string; error?: string }
+  | { type: 'settled'; runId: string; outcome: AgentOutcome; text?: string; truncated?: boolean; error?: string }
 )
 
 export type AgentControl =

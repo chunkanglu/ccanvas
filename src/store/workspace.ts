@@ -350,7 +350,9 @@ export const useStore = create<Store>((set, get) => ({
   trackingAgentTabId: null,
   snapGuides: null,
   presenting: false,
-  flowsEnabled: true,
+  // Automatic dispatch is explicitly re-armed after every frontend start.
+  // Replayed runtime snapshots are reconciliation evidence, not new work.
+  flowsEnabled: false,
 
   active: () => {
     const s = get()

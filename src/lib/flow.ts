@@ -1,52 +1,40 @@
-// Arrow orchestration engine. An arrow between two agent widgets can carry an
-// ArrowFlow: when the source agent finishes a turn and the edge's condition
-// holds, the target agent is handed a prompt (and Enter). Multiple arrows into
-// one target give join semantics — "after THESE agents run, run THIS one."
-//
-// This module is non-reactive: TerminalBody calls onAgentTurnComplete() when an
-// agent settles to idle; we read the document from the store and drive live
-// sessions through the transport registry in agents.ts.
+// Provider-neutral arrow orchestration. Pi contributes authoritative settled-run
+// records through its companion; Claude's PTY adapter produces the same shape
+// from its existing quiet-screen/transcript heuristic.
 
-import type { ArrowElement, CanvasElement, WidgetElement, Workspace } from './types'
+import type { AgentHarness, ArrowElement, CanvasElement, WidgetElement, Workspace } from './types'
 import { useStore } from '../store/workspace'
-import { agentRuntimeId, sendPrompt, isLive, stripAnsi, notify } from './agents'
+import { agentRuntimeId, deliverPrompt, isLive, stripAnsi, notify, type AgentDeliveryResult } from './agents'
 import { readTranscript, extractLastAssistant } from './transcript'
 
-// Heuristic keyword sets for the success/failure conditions. An agent that
-// needs a reliable signal should instead be told to end with a sentinel and
-// matched with `when: 'match'` against a precise pattern.
 const SUCCESS_RE =
   /\b(success(ful(ly)?)?|succeeded|done|complete[d]?|passed|✓|✔|finished|lgtm|ready)\b/i
 const FAILURE_RE =
   /\b(fail(ed|ure|s)?|errored?|exception|✗|✘|cannot|could ?n'?t|denied|aborted|rejected|blocked)\b/i
-
-/**
- * Text the success/failure/match conditions run against. Uses the cleaned
- * output (TUI input-box chrome stripped) so a finished agent's concluding
- * words aren't pushed out of view by the prompt box; trailing slice keeps it
- * to roughly the last turn.
- */
-function lastTurnText(tail: string): string {
-  return cleanAgentOutput(tail).slice(-1500)
-}
-
-// Placeholder in an edge prompt that gets replaced with the source agent's
-// piped output. (Aliases for convenience.)
 const OUTPUT_TOKEN = /\{\{\s*(output|out|result|prev|previous)\s*\}\}/gi
 
-/**
- * Best-effort extraction of an agent's recent output for piping into the next
- * agent: strip ANSI, drop Claude's TUI input-box chrome and hint lines, collapse
- * blank runs, and keep the trailing slice. It's terminal scraping, so it's
- * approximate — wrap it with instructions via {{output}} when precision matters.
- */
+export type SettledRunOutcome = 'completed' | 'failed' | 'aborted'
+export type SettledAgentRun = {
+  sourceId: string
+  workspaceId: string
+  harness: AgentHarness
+  generation: number
+  runId: string
+  outcome: SettledRunOutcome
+  assistantText: string
+  truncated?: boolean
+}
+
+export type FlowDeliveryState = AgentDeliveryResult['status'] | 'pending'
+
+/** Remove Claude TUI chrome from its compatibility-adapter output. */
 export function cleanAgentOutput(tail: string): string {
   const lines = stripAnsi(tail).split('\n')
   const kept: string[] = []
   for (const raw of lines) {
     const line = raw.replace(/\s+$/, '')
-    if (/[╭╮╰╯│─┌┐└┘├┤┬┴┼]/.test(line)) continue // input-box frame
-    if (/^\s*[>❯]\s*$/.test(line)) continue // empty prompt marker
+    if (/[╭╮╰╯│─┌┐└┘├┤┬┴┼]/.test(line)) continue
+    if (/^\s*[>❯]\s*$/.test(line)) continue
     if (/\?\s*for shortcuts/i.test(line)) continue
     if (/^\s*(esc to interrupt|ctrl\+[a-z]|shift\+|tab to|⏎)/i.test(line)) continue
     kept.push(line)
@@ -54,35 +42,9 @@ export function cleanAgentOutput(tail: string): string {
   return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim().slice(-6000)
 }
 
-// ---------- session transcript (the model's actual last message) ----------
-// Reading the agent's transcript gives the model's real assistant output, free
-// of terminal chrome. The location + parsing live in lib/transcript.ts.
-
-/**
- * The text of the source agent's most recent assistant turn, pulled from its
- * session transcript: every assistant text block since the last user/tool event.
- * Returns null if the transcript can't be read (no backend, unknown path, etc.).
- */
-async function readLastAssistant(source: WidgetElement): Promise<string | null> {
+async function readLastClaudeAssistant(source: WidgetElement): Promise<string | null> {
   const content = await readTranscript(source.cwd, source.sessionId)
-  if (!content) return null
-  return extractLastAssistant(content)
-}
-
-/** True if an edge's resolved text would embed the source's output. */
-function wantsOutput(edge: ArrowElement): boolean {
-  const p = edge.flow?.prompt?.trim() ?? ''
-  if (!p) return true
-  OUTPUT_TOKEN.lastIndex = 0
-  const r = OUTPUT_TOKEN.test(p)
-  OUTPUT_TOKEN.lastIndex = 0
-  return r
-}
-
-/** Capture the source's output to pipe: real transcript message, else scrape. */
-async function captureOutput(source: WidgetElement, tail: string): Promise<string> {
-  const fromTranscript = await readLastAssistant(source)
-  return fromTranscript ?? cleanAgentOutput(tail)
+  return content ? extractLastAssistant(content) : null
 }
 
 function safeRegex(src: string): RegExp | null {
@@ -93,11 +55,17 @@ function safeRegex(src: string): RegExp | null {
   }
 }
 
-/** Does the source agent's just-finished turn satisfy this edge's condition? */
-export function evaluateCondition(arrow: ArrowElement, tail: string): boolean {
+/** Runtime failure is explicit; success/failure remain visibly heuristic text modes. */
+export function evaluateCondition(
+  arrow: ArrowElement,
+  assistantText: string,
+  outcome: SettledRunOutcome = 'completed',
+): boolean {
   const flow = arrow.flow
-  if (!flow) return false
-  const text = lastTurnText(tail)
+  if (!flow || outcome === 'aborted') return false
+  if (flow.when === 'runtime-error') return outcome === 'failed'
+  if (outcome !== 'completed') return false
+  const text = assistantText.slice(-6000)
   switch (flow.when) {
     case 'always':
       return true
@@ -117,144 +85,287 @@ export function evaluateCondition(arrow: ArrowElement, tail: string): boolean {
   }
 }
 
-// ---------- runtime bookkeeping (outside the reactive store) ----------
+function wantsOutput(edge: ArrowElement): boolean {
+  const prompt = edge.flow?.prompt?.trim() ?? ''
+  if (!prompt) return true
+  OUTPUT_TOKEN.lastIndex = 0
+  const result = OUTPUT_TOKEN.test(prompt)
+  OUTPUT_TOKEN.lastIndex = 0
+  return result
+}
 
-// An edge fires at most once per source-turn — remember the source turn index
-// it last fired on so a single completion can't re-trigger it.
-const lastFiredTurn = new Map<string, number>()
-// Incoming edges satisfied for a target but not yet consumed by a fire. Keyed
-// by target widget id → (arrow id → the source agent's piped output captured
-// when that edge was satisfied).
-const satisfied = new Map<string, Map<string, string>>()
+function edgeText(edge: ArrowElement, output: string): string {
+  const prompt = edge.flow?.prompt?.trim() ?? ''
+  if (!prompt) return output
+  OUTPUT_TOKEN.lastIndex = 0
+  if (!OUTPUT_TOKEN.test(prompt)) return prompt
+  OUTPUT_TOKEN.lastIndex = 0
+  return prompt.replace(OUTPUT_TOKEN, output)
+}
+
+function hash(value: string): string {
+  let forward = 0x811c9dc5
+  let reverse = 0x9e3779b9
+  for (let index = 0; index < value.length; index++) {
+    forward ^= value.charCodeAt(index)
+    forward = Math.imul(forward, 0x01000193)
+    reverse ^= value.charCodeAt(value.length - index - 1)
+    reverse = Math.imul(reverse, 0x85ebca6b)
+  }
+  return `${(forward >>> 0).toString(36)}${(reverse >>> 0).toString(36)}`
+}
+
+/** Deterministic revision of executable graph fields, independent of z-order noise. */
+export function flowGraphRevision(workspace: Workspace): string {
+  const records = workspace.elements
+    .filter((element): element is ArrowElement => element.type === 'arrow' && !!element.flow)
+    .map(edge => ({
+      id: edge.id,
+      from: edge.from?.id ?? '',
+      to: edge.to?.id ?? '',
+      enabled: edge.flow?.enabled !== false,
+      when: edge.flow?.when ?? '',
+      pattern: edge.flow?.pattern ?? '',
+      prompt: edge.flow?.prompt ?? '',
+      join: edge.flow?.join ?? 'all',
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id))
+  return hash(JSON.stringify(records))
+}
+
+function isAgent(element: CanvasElement | undefined): element is WidgetElement {
+  return !!element && element.type === 'widget' && element.kind === 'agent'
+}
+
+function tabContaining(id: string): Workspace | null {
+  for (const tab of useStore.getState().tabs) {
+    if (tab.elements.some(element => element.id === id)) return tab
+  }
+  return null
+}
+
+function flowEdges(
+  workspace: Workspace,
+  options: { from?: string; to?: string } = {},
+): ArrowElement[] {
+  const byId = new Map(workspace.elements.map(element => [element.id, element]))
+  return workspace.elements.filter((element): element is ArrowElement => {
+    if (element.type !== 'arrow' || !element.flow || element.flow.enabled === false) return false
+    if (!element.from || !element.to) return false
+    if (options.from && element.from.id !== options.from) return false
+    if (options.to && element.to.id !== options.to) return false
+    return isAgent(byId.get(element.from.id)) && isAgent(byId.get(element.to.id))
+  })
+}
+
+type Satisfaction = { output: string; sourceRunKey: string }
+type JoinState = {
+  revision: string
+  epoch: number
+  createdAt: number
+  edges: Map<string, Satisfaction>
+}
+
 const runtimeFlowId = (workspaceId: string, elementId: string) => `${workspaceId}:${elementId}`
+const seenRuns = new Map<string, true>()
+const workspaceRevisions = new Map<string, string>()
+const satisfied = new Map<string, JoinState>()
+const targetEpochs = new Map<string, number>()
+const deliveries = new Map<string, FlowDeliveryState>()
+let flowStateEpoch = 0
 
-// Runaway guard: if flows fire faster than this within the window, pause them
-// and tell the user, so a cyclic graph can't spam agents forever.
+const MAX_RUNTIME_RECORDS = 4096
+const MAX_JOIN_AGE_MS = 10 * 60_000
 const FIRE_WINDOW_MS = 60_000
 const FIRE_LIMIT = 60
 let fireTimes: number[] = []
 
+function boundedSet<T>(map: Map<string, T>, key: string, value: T) {
+  map.delete(key)
+  map.set(key, value)
+  while (map.size > MAX_RUNTIME_RECORDS) map.delete(map.keys().next().value!)
+}
+
+function clearWorkspaceState(workspaceId: string) {
+  const prefix = `${workspaceId}:`
+  for (const key of satisfied.keys()) if (key.startsWith(prefix)) satisfied.delete(key)
+  for (const key of targetEpochs.keys()) if (key.startsWith(prefix)) targetEpochs.delete(key)
+}
+
+function ensureGraphRevision(workspace: Workspace): string {
+  const revision = flowGraphRevision(workspace)
+  const previous = workspaceRevisions.get(workspace.id)
+  if (previous !== undefined && previous !== revision) clearWorkspaceState(workspace.id)
+  workspaceRevisions.set(workspace.id, revision)
+  return revision
+}
+
+function stillArmed(workspaceId: string, revision: string, epoch: number): boolean {
+  if (!useStore.getState().flowsEnabled || epoch !== flowStateEpoch) return false
+  const workspace = useStore.getState().tabs.find(tab => tab.id === workspaceId)
+  return !!workspace && flowGraphRevision(workspace) === revision
+}
+
 function allowFire(): boolean {
   const now = Date.now()
-  fireTimes = fireTimes.filter((t) => now - t < FIRE_WINDOW_MS)
+  fireTimes = fireTimes.filter(time => now - time < FIRE_WINDOW_MS)
   if (fireTimes.length >= FIRE_LIMIT) {
     useStore.getState().setFlowsEnabled(false)
-    notify('ccanvas flows paused', 'Too many auto-runs in a row — flows paused.')
+    notify('ccanvas flows paused', 'Too many automatic runs in one minute.')
     return false
   }
   fireTimes.push(now)
   return true
 }
 
-/** Forget all pending state — used when flows are toggled off. */
+/** Pause/re-arm and graph replacement discard every unconsumed runtime record. */
 export function resetFlowState() {
-  lastFiredTurn.clear()
+  flowStateEpoch += 1
+  seenRuns.clear()
+  workspaceRevisions.clear()
   satisfied.clear()
+  targetEpochs.clear()
+  deliveries.clear()
   fireTimes = []
 }
 
-// ---------- graph helpers ----------
-
-function isAgent(el: CanvasElement | undefined): el is WidgetElement {
-  return !!el && el.type === 'widget' && el.kind === 'agent'
+export function flowDeliveryState(deliveryId: string): FlowDeliveryState | undefined {
+  return deliveries.get(deliveryId)
 }
 
-/** The workspace (tab) that contains a given element id. */
-function tabContaining(id: string): Workspace | null {
-  for (const t of useStore.getState().tabs)
-    if (t.elements.some((e) => e.id === id)) return t
-  return null
-}
+const wait = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds))
 
-/** Live, enabled flow arrows in a tab, optionally filtered by source/target. */
-function flowEdges(
-  ws: Workspace,
-  opts: { from?: string; to?: string } = {},
-): ArrowElement[] {
-  const byId = new Map(ws.elements.map((e) => [e.id, e]))
-  return ws.elements.filter((e): e is ArrowElement => {
-    if (e.type !== 'arrow' || !e.flow || e.flow.enabled === false) return false
-    if (!e.from || !e.to) return false
-    if (opts.from && e.from.id !== opts.from) return false
-    if (opts.to && e.to.id !== opts.to) return false
-    // both ends must resolve to agent widgets
-    return isAgent(byId.get(e.from.id)) && isAgent(byId.get(e.to.id))
-  })
-}
-
-// ---------- delivery ----------
-
-/**
- * Send a prompt to a target agent, retrying briefly if it isn't live yet.
- * Multi-line prompts are wrapped in a bracketed-paste sequence so Claude's TUI
- * ingests every line as one block (a bare \n would submit the first line); a
- * trailing \r then submits.
- */
-function deliver(runtimeId: string, widgetId: string, prompt: string, title: string, tries = 0) {
-  const text = prompt.replace(/\r/g, '').replace(/\n+$/, '')
-  if (sendPrompt(runtimeId, text)) return
-  if (tries >= 4) {
-    notify('ccanvas flow stalled', `${title} isn't running — open it to receive its prompt.`)
+async function deliverFlow(
+  workspace: Workspace,
+  target: WidgetElement,
+  prompt: string,
+  deliveryId: string,
+  revision: string,
+  epoch: number,
+): Promise<void> {
+  if (deliveries.has(deliveryId) || !stillArmed(workspace.id, revision, epoch)) return
+  const runtimeId = agentRuntimeId(workspace.id, target)
+  // An offline check proves that no write occurred, so it is safe to briefly
+  // wait for a hidden/new target to mount. Once a semantic write is attempted,
+  // every non-acknowledged result is final or uncertain and is never retried.
+  for (let attempt = 0; attempt < 5 && !isLive(runtimeId); attempt++) {
+    if (!stillArmed(workspace.id, revision, epoch)) return
+    useStore.getState().setActiveWidget(target.id)
+    await wait(1300)
+  }
+  if (!stillArmed(workspace.id, revision, epoch)) return
+  if (!isLive(runtimeId)) {
+    boundedSet(deliveries, deliveryId, 'offline')
+    notify('ccanvas flow stalled', `${target.title || 'Agent'} is offline; nothing was sent.`)
     return
   }
-  if (!isLive(runtimeId)) {
-    // nudge the widget to mount/connect, then retry
-    useStore.getState().setActiveWidget(widgetId)
+
+  boundedSet(deliveries, deliveryId, 'pending')
+  const result = await deliverPrompt(runtimeId, prompt, deliveryId)
+  boundedSet(deliveries, deliveryId, result.status)
+  if (result.status === 'accepted') return
+  const detail = result.error ? `: ${result.error}` : ''
+  if (result.status === 'uncertain') {
+    notify('ccanvas flow uncertain', `${target.title || 'Agent'} may have accepted the prompt; it was not retried${detail}`)
+  } else {
+    notify('ccanvas flow rejected', `${target.title || 'Agent'} did not accept the prompt${detail}`)
   }
-  setTimeout(() => deliver(runtimeId, widgetId, prompt, title, tries + 1), 1300)
 }
 
-/**
- * The text one edge contributes to its target, resolving output piping:
- *  • prompt with {{output}} → placeholder replaced by the source's output
- *  • empty prompt           → the source's output itself (pure pipe)
- *  • plain prompt           → the prompt as written (no pipe)
- */
-function edgeText(edge: ArrowElement, output: string): string {
-  const p = edge.flow?.prompt?.trim() ?? ''
-  if (!p) return output
-  if (OUTPUT_TOKEN.test(p)) {
-    OUTPUT_TOKEN.lastIndex = 0 // reset the global regex after .test()
-    return p.replace(OUTPUT_TOKEN, output)
-  }
-  return p
-}
-
-/** Fire a target: build its prompt from the satisfied edges (piping), deliver. */
 function fireTarget(
-  ws: Workspace,
+  workspace: Workspace,
   targetId: string,
-  satisfiedEdges: ArrowElement[],
-  outputs: Map<string, string>,
+  edges: ArrowElement[],
+  join: JoinState,
+  revision: string,
 ) {
   if (!allowFire()) return
-  const target = ws.elements.find((e) => e.id === targetId)
-  const title = (target && 'title' in target && target.title) || 'agent'
-  // combine each contributing edge's resolved text, in stacking order
-  const prompt = satisfiedEdges
+  const target = workspace.elements.find(element => element.id === targetId)
+  if (!isAgent(target)) return
+  const prompt = edges
     .slice()
     .sort((a, b) => a.z - b.z)
-    .map((e) => edgeText(e, outputs.get(e.id) ?? ''))
-    .map((s) => s.trim())
+    .map(edge => edgeText(edge, join.edges.get(edge.id)?.output ?? ''))
+    .map(text => text.trim())
     .filter(Boolean)
     .join('\n\n')
-  // re-arm: consume the satisfied set so the next run needs fresh completions
-  satisfied.delete(runtimeFlowId(ws.id, targetId))
+
+  const targetKey = runtimeFlowId(workspace.id, targetId)
+  satisfied.delete(targetKey)
+  targetEpochs.set(targetKey, join.epoch + 1)
   if (!prompt) {
-    notify('ccanvas flow', `${title} triggered, but there was no output or prompt to send.`)
+    notify('ccanvas flow', `${target.title || 'Agent'} triggered without a prompt or output.`)
     return
   }
-  if (target?.type !== 'widget') return
-  deliver(agentRuntimeId(ws.id, target), targetId, prompt, title)
+
+  const sourceKeys = edges.map(edge => join.edges.get(edge.id)?.sourceRunKey ?? '').sort()
+  const deliveryId = `flow-${hash(JSON.stringify([revision, sourceKeys, edges.map(edge => edge.id).sort(), targetId]))}`
+  const epoch = flowStateEpoch
+  void deliverFlow(workspace, target, prompt, deliveryId, revision, epoch)
 }
 
-// ---------- entry point ----------
+/** Consume one authoritative settled run. Duplicate/replayed run identities are ignored. */
+export async function onAgentRunSettled(
+  run: SettledAgentRun,
+  expectation?: { revision: string; epoch: number },
+): Promise<void> {
+  if (!useStore.getState().flowsEnabled) return
+  if (!run.runId || !Number.isSafeInteger(run.generation) || run.generation < 0) return
+  const workspace = useStore.getState().tabs.find(tab => tab.id === run.workspaceId)
+  if (!workspace) return
+  const revision = ensureGraphRevision(workspace)
+  if (
+    expectation
+    && (expectation.revision !== revision || expectation.epoch !== flowStateEpoch)
+  ) return
+  const runKey = `${run.workspaceId}:${run.sourceId}:${run.generation}:${run.runId}`
+  if (seenRuns.has(runKey)) return
+  boundedSet(seenRuns, runKey, true)
+  if (run.outcome === 'aborted') return
 
-/**
- * Called by TerminalBody when an agent settles to idle after working.
- * `turnIndex` is the agent's monotonic turn counter (for per-turn dedupe);
- * `tail` is its recent terminal output.
- */
+  const outgoing = flowEdges(workspace, { from: run.sourceId })
+  if (!outgoing.length) return
+  const touchedTargets = new Map<string, Set<string>>()
+  const now = Date.now()
+  for (const edge of outgoing) {
+    if (!evaluateCondition(edge, run.assistantText, run.outcome)) continue
+    const targetId = edge.to!.id
+    const targetKey = runtimeFlowId(workspace.id, targetId)
+    let join = satisfied.get(targetKey)
+    if (!join || join.revision !== revision || now - join.createdAt > MAX_JOIN_AGE_MS) {
+      join = {
+        revision,
+        epoch: targetEpochs.get(targetKey) ?? 0,
+        createdAt: now,
+        edges: new Map(),
+      }
+      satisfied.set(targetKey, join)
+    }
+    // First completion wins for this edge/epoch. A later source run cannot
+    // silently replace evidence while the remaining AND inputs are pending.
+    if (!join.edges.has(edge.id)) join.edges.set(edge.id, {
+      output: wantsOutput(edge) ? run.assistantText : '',
+      sourceRunKey: runKey,
+    })
+    const touched = touchedTargets.get(targetId) ?? new Set<string>()
+    touched.add(edge.id)
+    touchedTargets.set(targetId, touched)
+  }
+
+  if (!stillArmed(workspace.id, revision, flowStateEpoch)) return
+  for (const [targetId, touched] of touchedTargets) {
+    const incoming = flowEdges(workspace, { to: targetId })
+    const join = satisfied.get(runtimeFlowId(workspace.id, targetId))
+    if (!join || !incoming.length || join.revision !== revision) continue
+    const ready = incoming.filter(edge => join.edges.has(edge.id))
+    const triggeredAny = ready.filter(edge => touched.has(edge.id) && edge.flow?.join === 'any')
+    const allFire = incoming.every(edge => join.edges.has(edge.id))
+    if (triggeredAny.length) fireTarget(workspace, targetId, triggeredAny, join, revision)
+    else if (allFire) fireTarget(workspace, targetId, ready, join, revision)
+  }
+}
+
+/** Claude compatibility adapter: quiet-screen turn plus transcript extraction. */
 export async function onAgentTurnComplete(
   sourceId: string,
   turnIndex: number,
@@ -262,46 +373,23 @@ export async function onAgentTurnComplete(
   workspaceId?: string,
 ) {
   if (!useStore.getState().flowsEnabled) return
-  const ws = workspaceId
-    ? useStore.getState().tabs.find((tab) => tab.id === workspaceId) ?? null
+  const workspace = workspaceId
+    ? useStore.getState().tabs.find(tab => tab.id === workspaceId) ?? null
     : tabContaining(sourceId)
-  if (!ws) return
-
-  const outgoing = flowEdges(ws, { from: sourceId })
-  if (!outgoing.length) return
-
-  // this agent's output (the model's last message), captured once to pipe into
-  // any edge that fires — only fetched when some edge actually needs it
-  const sourceEl = ws.elements.find((e) => e.id === sourceId)
-  const output =
-    sourceEl && sourceEl.type === 'widget' && outgoing.some(wantsOutput)
-      ? await captureOutput(sourceEl, tail)
-      : ''
-
-  const touchedTargets = new Set<string>()
-  for (const edge of outgoing) {
-    const edgeRuntimeId = runtimeFlowId(ws.id, edge.id)
-    if (lastFiredTurn.get(edgeRuntimeId) === turnIndex) continue // already fired this turn
-    if (!evaluateCondition(edge, tail)) continue
-    lastFiredTurn.set(edgeRuntimeId, turnIndex)
-    const targetId = edge.to!.id
-    const targetRuntimeId = runtimeFlowId(ws.id, targetId)
-    let set = satisfied.get(targetRuntimeId)
-    if (!set) satisfied.set(targetRuntimeId, (set = new Map()))
-    set.set(edge.id, output)
-    touchedTargets.add(targetId)
-  }
-
-  // decide which touched targets should now fire
-  for (const targetId of touchedTargets) {
-    const incoming = flowEdges(ws, { to: targetId })
-    const sat = satisfied.get(runtimeFlowId(ws.id, targetId))
-    if (!sat || !incoming.length) continue
-    const satEdges = incoming.filter((e) => sat.has(e.id))
-    // OR: any satisfied edge marked 'any' fires immediately
-    const anyFires = satEdges.some((e) => e.flow?.join === 'any')
-    // AND (default): every incoming edge must be satisfied
-    const allFire = incoming.every((e) => sat.has(e.id))
-    if (anyFires || allFire) fireTarget(ws, targetId, satEdges, sat)
-  }
+  if (!workspace) return
+  const source = workspace.elements.find(element => element.id === sourceId)
+  if (!isAgent(source)) return
+  const revision = ensureGraphRevision(workspace)
+  const epoch = flowStateEpoch
+  const transcriptText = await readLastClaudeAssistant(source)
+  if (!stillArmed(workspace.id, revision, epoch)) return
+  await onAgentRunSettled({
+    sourceId,
+    workspaceId: workspace.id,
+    harness: source.harness === 'pi' ? 'pi' : 'claude',
+    generation: 0,
+    runId: String(turnIndex),
+    outcome: 'completed',
+    assistantText: transcriptText ?? cleanAgentOutput(tail),
+  }, { revision, epoch })
 }

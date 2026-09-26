@@ -10,7 +10,7 @@ const result = await build({
   build: {
     write: false, minify: false,
     lib: { entry: `${root}scripts/pi-companion-extension.ts`, formats: ['es'] },
-    rollupOptions: { external: ['node:net', '@earendil-works/pi-coding-agent'] },
+    rollupOptions: { external: ['node:net', 'node:os', 'node:path', 'node:url', '@earendil-works/pi-coding-agent'] },
   },
 })
 const bundle = result[0].output.find(entry => entry.type === 'chunk' && entry.isEntry)
@@ -106,6 +106,7 @@ test('companion authenticates, replays events, scopes controls and preserves nat
 
   const calls = { abort: 0, shutdown: 0 }
   const ctx = {
+    cwd: '/synthetic/project',
     get model() { return selectedModel },
     get thinkingLevel() { return selectedThinking },
     scopedModels: availableModels.map(model => ({ model })),
@@ -141,6 +142,49 @@ test('companion authenticates, replays events, scopes controls and preserves nat
   )
   assert.deepEqual(catalog.event.models.map(model => model.id), ['synthetic-model', 'alternate-model'])
   assert.deepEqual(catalog.event.tools.map(tool => [tool.name, tool.active]), [['read', true], ['edit', false]])
+
+  handlers.get('before_agent_start')({}, ctx)
+  handlers.get('agent_start')({}, ctx)
+  handlers.get('message_update')({ assistantMessageEvent: { type: 'start', partial: { role: 'assistant', content: [] } } }, ctx)
+  handlers.get('message_update')({ assistantMessageEvent: { type: 'text_start' } }, ctx)
+  handlers.get('message_update')({ assistantMessageEvent: { type: 'text_delta', delta: 'final STATUS: OK' } }, ctx)
+  handlers.get('message_update')({ assistantMessageEvent: { type: 'text_end' } }, ctx)
+  handlers.get('message_update')({
+    assistantMessageEvent: {
+      type: 'done', reason: 'stop',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'final STATUS: OK' }] },
+    },
+  }, ctx)
+  handlers.get('tool_execution_start')({ toolCallId: 'tool-1', toolName: 'read', args: { path: '@src/a.ts' } }, ctx)
+  handlers.get('tool_execution_end')({ toolCallId: 'tool-1', toolName: 'read', result: 'ok', isError: false }, ctx)
+  handlers.get('agent_end')({ messages: [{ role: 'assistant', stopReason: 'stop' }] }, ctx)
+  handlers.get('agent_settled')({}, ctx)
+  const settled = await waitFor(
+    () => records.find(frame => frame.type === 'event' && frame.event.type === 'lifecycle' && frame.event.phase === 'agent_settled'),
+    'settled run envelope',
+  )
+  assert.equal(settled.event.runId, '9:1')
+  assert.equal(settled.event.outcome, 'completed')
+  assert.equal(settled.event.assistantText, 'final STATUS: OK')
+  assert.ok(records.some(frame => frame.type === 'event' && frame.event.type === 'tool' && frame.event.phase === 'start' && frame.event.resolvedPath === '/synthetic/project/src/a.ts'))
+  assert.ok(records.some(frame => frame.type === 'event' && frame.event.type === 'tool' && frame.event.phase === 'end' && frame.event.isError === false))
+
+  handlers.get('before_agent_start')({}, ctx)
+  handlers.get('agent_start')({}, ctx)
+  handlers.get('message_update')({
+    assistantMessageEvent: {
+      type: 'error', reason: 'error',
+      error: { role: 'assistant', content: [{ type: 'text', text: 'provider failed' }] },
+    },
+  }, ctx)
+  handlers.get('agent_end')({ messages: [] }, ctx)
+  handlers.get('agent_settled')({}, ctx)
+  const failedSettled = await waitFor(
+    () => records.find(frame => frame.type === 'event' && frame.event.type === 'lifecycle' && frame.event.phase === 'agent_settled' && frame.event.runId === '9:2'),
+    'failed settled run envelope',
+  )
+  assert.equal(failedSettled.event.outcome, 'failed')
+  assert.equal(failedSettled.event.assistantText, 'provider failed')
 
   const prompt = { ...runtime, type: 'control', requestId: 'prompt-1', control: { type: 'prompt', text: 'safe synthetic prompt', deliverAs: 'followUp' } }
   peer.write(line(prompt) + line(prompt))
@@ -233,7 +277,7 @@ test('companion authenticates, replays events, scopes controls and preserves nat
     assistantMessageEvent: { type: 'text_delta', delta: 'y'.repeat(300_000) },
   }, ctx)
   const assistant = await waitFor(
-    () => records.find(frame => frame.type === 'event' && frame.event.type === 'assistant'),
+    () => records.find(frame => frame.type === 'event' && frame.event.type === 'assistant' && frame.event.truncated === true),
     'bounded assistant event',
   )
   assert.equal(assistant.event.truncated, true)
@@ -243,7 +287,7 @@ test('companion authenticates, replays events, scopes controls and preserves nat
     toolCallId: 'large-call', toolName: 'read', args: { value: 'x'.repeat(300_000) },
   }, ctx)
   const tool = await waitFor(
-    () => records.find(frame => frame.type === 'event' && frame.event.type === 'tool'),
+    () => records.find(frame => frame.type === 'event' && frame.event.type === 'tool' && frame.event.truncated === true),
     'bounded tool event',
   )
   assert.equal(tool.event.truncated, true)
