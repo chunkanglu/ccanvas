@@ -58,7 +58,9 @@ test('creation entry points are Pi-first and keep Claude as explicit legacy', as
   assert.match(wizard, /Create Pi agent from this configuration/)
   assert.doesNotMatch(palette, /AGENT_MODELS|opus|sonnet|haiku/)
   assert.match(palette, /New: Claude agent \(legacy\)/)
-  assert.match(palette, /harness: 'pi',\n\s+cwd: wtPath/)
+  assert.match(palette, /harness: 'pi', worktreeRepo: dir/)
+  assert.doesNotMatch(palette, /window\.prompt\('New worktree branch name'\)/)
+  assert.match(wizard, /'worktree', 'add', worktreePath, '-b', cleanBranch/)
   assert.match(canvas, /name: 'claude', target: 'agent', desc: 'Claude agent \(legacy\)'/)
   assert.match(canvas, /head\.toLowerCase\(\) === 'claude' \? 'claude' : 'pi'/)
   assert.match(toolbar, /openAgentWizard\(\{ x, y, harness: 'pi' \}\)/)
@@ -155,4 +157,19 @@ test('graph and usage UI label source/scope explicitly', async () => {
   assert.match(usage, /Attached Pi sessions/)
   assert.match(usage, /not bills or account/)
   assert.match(usage, /Claude Code \(legacy\)/)
+})
+
+test('worktree branch validation rejects unsafe or ambiguous names', () => {
+  for (const branch of ['feature/pi', 'fix-1', 'user.name/topic']) assert.equal(phase5.validWorktreeBranch(branch), true, branch)
+  for (const branch of ['', '-bad', '/bad', 'bad/', 'a..b', 'a//b', 'x.lock', '.hidden', 'a/.hidden', 'space name', 'semi;colon']) {
+    assert.equal(phase5.validWorktreeBranch(branch), false, branch)
+  }
+})
+
+test('knowledge graph source controls are above the empty-state overlay', async () => {
+  const css = await readFile(`${root}src/styles/global.css`, 'utf8')
+  assert.match(css, /\.mem-graph__title \{[^}]*z-index: 3/)
+  assert.match(css, /\.mem-graph__msg \{[\s\S]*?pointer-events: none;/)
+  const graph = await readFile(`${root}src/widgets/KnowledgeGraphBody.tsx`, 'utf8')
+  assert.match(graph, /Choose Markdown folder…/)
 })

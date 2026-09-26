@@ -3,7 +3,7 @@ import { useStore, selectActive } from '../store/workspace'
 import { screenToWorld } from '../lib/geometry'
 import { elementBounds } from '../lib/geometry'
 import { downloadPng, downloadSvg } from '../lib/export'
-import { runCommand, joinPath } from '../lib/backend'
+import { runCommand } from '../lib/backend'
 import { agentRuntimeId, sendPrompt, isLive } from '../lib/agents'
 import type { WidgetElement, WidgetKind } from '../lib/types'
 import { loadPiLaunchProfiles, piLaunchProfileLabel } from '../lib/pi-launch'
@@ -143,28 +143,11 @@ export function CommandPalette() {
         label: 'New Pi agent in a git worktree…',
         hint: 'isolated',
         group: 'Create',
-        run: async () => {
-          const branch = window.prompt('New worktree branch name')?.trim()
-          if (!branch) return
-          const wtPath = joinPath(joinPath(dir, '.ccanvas-worktrees'), branch)
-          const res = await runCommand(
-            'git',
-            ['-C', dir, 'worktree', 'add', wtPath, '-b', branch],
-            dir,
-          )
-          if (!res || res.code !== 0) {
-            window.alert('git worktree failed:\n' + (res?.stderr || 'backend offline'))
-            return
-          }
+        run: () => {
+          // WKWebView does not implement window.prompt; collect the branch in
+          // the wizard and create the worktree only when the user submits.
           const w = worldCenter()
-          s.openAgentWizard({
-            x: w.x,
-            y: w.y,
-            harness: 'pi',
-            cwd: wtPath,
-            worktree: branch,
-            title: `agent · ${branch}`,
-          })
+          s.openAgentWizard({ x: w.x, y: w.y, harness: 'pi', worktreeRepo: dir })
         },
       })
     }

@@ -5,6 +5,7 @@ import { AGENT_COLORS, claudeColorName } from '../lib/types'
 import type { AgentHarness, AgentThinkingLevel, WidgetElement } from '../lib/types'
 import { agentRuntimeId, renameSession, sendTo, isLive } from '../lib/agents'
 import { IconAgent } from './icons'
+import { joinPath, runCommand } from '../lib/backend'
 import {
   getPiLauncherStatus,
   loadPiLaunchProfiles,
@@ -19,6 +20,19 @@ const MODELS = ['default', 'opus', 'sonnet', 'haiku']
 type ThinkingChoice = 'default' | AgentThinkingLevel
 const THINKING: ThinkingChoice[] = ['default', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
 const DEFAULT_COLOR = AGENT_COLORS[0].hex
+
+/** Conservative subset of git ref rules; git still performs final validation. */
+export function validWorktreeBranch(branch: string): boolean {
+  return /^[A-Za-z0-9._/-]{1,200}$/.test(branch)
+    && !branch.startsWith('-')
+    && !branch.startsWith('/')
+    && !branch.endsWith('/')
+    && !branch.endsWith('.')
+    && !branch.endsWith('.lock')
+    && !branch.includes('..')
+    && !branch.includes('//')
+    && !branch.split('/').some(part => !part || part.startsWith('.'))
+}
 
 // Modal shown when creating (or editing) an agent — set its name, colour,
 // model, permission mode, and an optional first prompt before it launches.
@@ -88,12 +102,45 @@ function Wizard({ ctx }: { ctx: AgentWizardCtx }) {
     })
   }
 
-  const folder = ctx.worktree
+  const [branch, setBranch] = useState('')
+  const [creating, setCreating] = useState(false)
+  const [createError, setCreateError] = useState<string>()
+  const worktreeMode = !editing && !!ctx.worktreeRepo && !ctx.worktree
+
+  const folder = worktreeMode
+    ? `new worktree · ${branch.trim() || 'branch'}`
+    : ctx.worktree
     ? `worktree · ${ctx.worktree}`
     : (ctx.cwd ?? ws.dir)?.replace(/[\\/]+$/, '').split(/[\\/]/).pop()
 
-  const submit = () => {
-    const title = name.trim() || `${harness} agent`
+  const submit = async () => {
+    if (creating) return
+    let launchCwd = ctx.cwd
+    let launchWorktree = ctx.worktree
+    const cleanBranch = branch.trim()
+    if (worktreeMode) {
+      if (!validWorktreeBranch(cleanBranch)) {
+        setCreateError('Enter a valid new branch name.')
+        return
+      }
+      setCreating(true)
+      setCreateError(undefined)
+      const repo = ctx.worktreeRepo!
+      const worktreePath = joinPath(joinPath(repo, '.ccanvas-worktrees'), cleanBranch)
+      const result = await runCommand(
+        'git',
+        ['-C', repo, 'worktree', 'add', worktreePath, '-b', cleanBranch],
+        repo,
+      )
+      if (!result || result.code !== 0) {
+        setCreating(false)
+        setCreateError(`git worktree failed: ${(result?.stderr || result?.stdout || 'backend offline').trim().slice(0, 500)}`)
+        return
+      }
+      launchCwd = worktreePath
+      launchWorktree = cleanBranch
+    }
+    const title = name.trim() || (launchWorktree ? `agent · ${launchWorktree}` : `${harness} agent`)
     const cleanModel = model === 'default' || !model.trim() ? undefined : model.trim()
     if (editing && existing) {
       beginHistory()
@@ -139,8 +186,8 @@ function Wizard({ ctx }: { ctx: AgentWizardCtx }) {
         skipPermissions: harness === 'claude' ? skip : false,
         agentPrompt: harness === 'claude' ? prompt.trim() || undefined : undefined,
         promptDraft: harness === 'pi' ? prompt || undefined : undefined,
-        ...(ctx.cwd ? { cwd: ctx.cwd } : {}),
-        ...(ctx.worktree ? { worktree: ctx.worktree } : {}),
+        ...(launchCwd ? { cwd: launchCwd } : {}),
+        ...(launchWorktree ? { worktree: launchWorktree } : {}),
       })
     }
     close()
@@ -154,7 +201,7 @@ function Wizard({ ctx }: { ctx: AgentWizardCtx }) {
         onKeyDown={(e) => {
           e.stopPropagation()
           if (e.key === 'Escape') close()
-          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submit()
+          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void submit()
         }}
       >
         <div className="wiz__head">
@@ -164,6 +211,25 @@ function Wizard({ ctx }: { ctx: AgentWizardCtx }) {
           <span className="wiz__title">{editing ? 'Edit agent' : 'New agent'}</span>
           {folder && <span className="wiz__folder">{folder}</span>}
         </div>
+
+        {worktreeMode && (
+          <>
+            <label className="wiz__label">New worktree branch</label>
+            <input
+              className="wiz__input"
+              autoFocus
+              placeholder="feature/my-change"
+              value={branch}
+              spellCheck={false}
+              disabled={creating}
+              onChange={(e) => {
+                setBranch(e.target.value)
+                setCreateError(undefined)
+              }}
+            />
+            <span className="wiz__hint">Created under .ccanvas-worktrees when you create the agent.</span>
+          </>
+        )}
 
         <label className="wiz__label">Harness</label>
         <div className="wiz__seg">
@@ -187,13 +253,13 @@ function Wizard({ ctx }: { ctx: AgentWizardCtx }) {
         <label className="wiz__label">Name</label>
         <input
           className="wiz__input"
-          autoFocus
-          placeholder={`${harness} agent`}
+          autoFocus={!worktreeMode}
+          placeholder={worktreeMode && branch.trim() ? `agent · ${branch.trim()}` : `${harness} agent`}
           value={name}
           spellCheck={false}
           onChange={(e) => setName(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter') submit()
+            if (e.key === 'Enter') void submit()
           }}
         />
 
@@ -318,12 +384,14 @@ function Wizard({ ctx }: { ctx: AgentWizardCtx }) {
           </button>
         )}
 
+        {createError && <div className="wiz__warning" role="alert">{createError}</div>}
+
         <div className="wiz__actions">
           <button className="wiz__btn" onClick={close}>
             Cancel
           </button>
-          <button className="wiz__btn wiz__btn--primary" onClick={submit}>
-            {editing ? 'Save' : 'Create agent'}
+          <button className="wiz__btn wiz__btn--primary" disabled={creating} onClick={() => void submit()}>
+            {editing ? 'Save' : creating ? 'Creating worktree…' : 'Create agent'}
           </button>
         </div>
         <span className="wiz__hint">⌘↵ to {editing ? 'save' : 'create'} · esc to cancel</span>

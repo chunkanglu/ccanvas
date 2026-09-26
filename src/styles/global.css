@@ -1519,7 +1519,7 @@ textarea {
 }
 .mem-graph__canvas { position: absolute; inset: 0; display: block; cursor: grab; }
 
-.mem-graph__title { position: absolute; top: 16px; left: 18px; pointer-events: none; }
+.mem-graph__title { position: absolute; top: 16px; left: 18px; z-index: 3; pointer-events: none; }
 .mem-graph__eyebrow {
   font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.18em;
   text-transform: uppercase; color: var(--accent); margin-bottom: 4px;
@@ -1564,7 +1564,9 @@ textarea {
   position: absolute; inset: 0; display: flex; flex-direction: column; gap: 6px;
   align-items: center; justify-content: center; text-align: center; padding: 24px;
   color: var(--ink-dim); font-family: var(--font-sans); font-size: 14px;
+  pointer-events: none;
 }
+.mem-graph__msg .mem-graph__source { margin-top: 8px; pointer-events: auto; }
 .mem-graph__msg-sub { color: var(--ink-faint); font-size: 12.5px; }
 
 .mem-graph__panel {

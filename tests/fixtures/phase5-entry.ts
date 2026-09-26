@@ -13,3 +13,4 @@ export {
   parseKnowledgeNote,
 } from '../../src/lib/knowledge-graph'
 export { useStore } from '../../src/store/workspace'
+export { validWorktreeBranch } from '../../src/ui/AgentWizard'

@@ -167,6 +167,8 @@ export type AgentWizardCtx = {
   color?: string
   cwd?: string
   worktree?: string
+  /** Repository in which the wizard should create a new worktree before spawning. */
+  worktreeRepo?: string
   title?: string
   agentPrompt?: string
 }

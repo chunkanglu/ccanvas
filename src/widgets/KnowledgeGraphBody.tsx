@@ -419,6 +419,9 @@ export function KnowledgeGraphBody({ el }: { el: WidgetElement }) {
           <div className="mem-graph__msg-sub">
             Pick a scoped notes folder; ccanvas reads it read-only and does not scan a whole vault by default.
           </div>
+          <button className="mem-graph__source" onClick={() => void chooseFolder()}>
+            Choose Markdown folder…
+          </button>
         </div>
       )}
       {status === 'unreadable' && (
