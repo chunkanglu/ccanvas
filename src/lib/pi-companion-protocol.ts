@@ -123,6 +123,25 @@ export type CompanionPong = RuntimeIdentity & {
   nonce: string
 }
 
+/** Companion tool call that needs canvas state, such as arrow-connected browsers. */
+export type CompanionToolRequest = RuntimeIdentity & {
+  v: typeof PI_COMPANION_VERSION
+  type: 'tool_request'
+  requestId: string
+  tool: 'browser'
+  action: string
+  args: Record<string, unknown>
+}
+
+export type CompanionToolResult = RuntimeIdentity & {
+  v: typeof PI_COMPANION_VERSION
+  type: 'tool_result'
+  requestId: string
+  ok: boolean
+  result?: string
+  error?: string
+}
+
 export type PiCompanionFrame =
   | CompanionHello
   | CompanionWelcome
@@ -131,9 +150,11 @@ export type PiCompanionFrame =
   | CompanionResult
   | CompanionPing
   | CompanionPong
+  | CompanionToolRequest
+  | CompanionToolResult
 
-export type HostInboundFrame = CompanionHello | CompanionEvent | CompanionResult | CompanionPong
-export type CompanionInboundFrame = CompanionWelcome | CompanionControl | CompanionPing
+export type HostInboundFrame = CompanionHello | CompanionEvent | CompanionResult | CompanionPong | CompanionToolRequest
+export type CompanionInboundFrame = CompanionWelcome | CompanionControl | CompanionPing | CompanionToolResult
 
 const byteLength = (value: string): number => new TextEncoder().encode(value).byteLength
 const object = (value: unknown): value is Record<string, unknown> =>
@@ -338,6 +359,22 @@ export function decodePiCompanionFrame(line: string): PiCompanionFrame {
     case 'pong':
       if (!text(value.nonce, 256)) throw new Error('Invalid companion ping')
       break
+    case 'tool_request':
+      if (
+        !text(value.requestId, 256)
+        || value.tool !== 'browser'
+        || !text(value.action, 64)
+        || !object(value.args)
+      ) throw new Error('Invalid companion tool request')
+      break
+    case 'tool_result':
+      if (
+        !text(value.requestId, 256)
+        || typeof value.ok !== 'boolean'
+        || (value.result !== undefined && (typeof value.result !== 'string' || byteLength(value.result) > 200 * 1024))
+        || (value.error !== undefined && !text(value.error, 8192))
+      ) throw new Error('Invalid companion tool result')
+      break
     default:
       throw new Error('Unknown companion frame')
   }
@@ -346,13 +383,13 @@ export function decodePiCompanionFrame(line: string): PiCompanionFrame {
 
 export function decodeHostInboundFrame(line: string): HostInboundFrame {
   const frame = decodePiCompanionFrame(line)
-  if (!['hello', 'event', 'result', 'pong'].includes(frame.type)) throw new Error('Frame is not valid companion-to-host traffic')
+  if (!['hello', 'event', 'result', 'pong', 'tool_request'].includes(frame.type)) throw new Error('Frame is not valid companion-to-host traffic')
   return frame as HostInboundFrame
 }
 
 export function decodeCompanionInboundFrame(line: string): CompanionInboundFrame {
   const frame = decodePiCompanionFrame(line)
-  if (!['welcome', 'control', 'ping'].includes(frame.type)) throw new Error('Frame is not valid host-to-companion traffic')
+  if (!['welcome', 'control', 'ping', 'tool_result'].includes(frame.type)) throw new Error('Frame is not valid host-to-companion traffic')
   return frame as CompanionInboundFrame
 }
 

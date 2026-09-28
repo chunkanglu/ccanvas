@@ -38,6 +38,7 @@ import {
   joinPath,
 } from '../lib/backend'
 import { resetFlowState } from '../lib/flow'
+import { uniqueBrowserName } from '../lib/browser-agent'
 import { startTracking, stopTracking } from '../lib/tracker'
 import { killPty } from '../lib/terminal'
 import { killManagedPi } from '../lib/pi-runtime'
@@ -699,6 +700,9 @@ export const useStore = create<Store>((set, get) => ({
       z: 0,
       title: WIDGET_TITLE[kind],
       ...(kind === 'web' || kind === 'video' ? { url: '' } : {}),
+      ...(kind === 'web'
+        ? { browserName: uniqueBrowserName(get().active()?.elements ?? []) }
+        : {}),
       ...(kind === 'note'
         ? { note: '# notes\n\n- [ ] a task\n- [x] done\n\nclick to edit · click a box to check' }
         : {}),

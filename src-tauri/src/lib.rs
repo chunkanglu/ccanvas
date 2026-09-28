@@ -59,6 +59,7 @@ pub fn run() {
             pi_runtime::pi_resize,
             pi_runtime::pi_detach,
             pi_runtime::pi_control,
+            pi_runtime::pi_tool_result,
             pi_runtime::pi_kill,
             pi_runtime::pi_kill_current,
             pi_runtime::pi_launcher_status,
@@ -67,6 +68,7 @@ pub fn run() {
             portal::portal_navigate,
             portal::portal_action,
             portal::portal_close,
+            portal::portal_eval,
             watch::watch_start,
             watch::watch_stop,
         ])

@@ -7,6 +7,7 @@ import {
   type CompanionEvent,
   type CompanionResult,
   type CompanionPong,
+  type CompanionToolRequest,
 } from './pi-companion-protocol'
 
 export type ManagedPiOpenOptions = {
@@ -34,7 +35,10 @@ export type ManagedPiEventDelivery = { replayed: boolean }
 
 export type ManagedPiHandlers = {
   onData(data: Uint8Array): void
-  onEvent(frame: CompanionEvent | CompanionResult | CompanionPong, delivery: ManagedPiEventDelivery): void
+  onEvent(
+    frame: CompanionEvent | CompanionResult | CompanionPong | CompanionToolRequest,
+    delivery: ManagedPiEventDelivery,
+  ): void
   onStatus(status: ManagedPiStatus): void
   onExit(): void
 }
@@ -46,6 +50,8 @@ export type ManagedPiRuntime = {
   send(data: string): void
   resize(cols: number, rows: number): void
   control(control: CompanionControlPayload, requestId?: string): Promise<string>
+  /** Answer a companion tool_request (e.g. canvas_browser). */
+  toolResult(requestId: string, outcome: { ok: true; result: string } | { ok: false; error: string }): void
   close(): void
   kill(): void
 }
@@ -192,7 +198,7 @@ export async function connectManagedPi(
                 else pendingControl.reject(new PiControlError('rejected', frame.error ?? 'Pi control failed'))
               }
             }
-            if (frame.type === 'event' || frame.type === 'result' || frame.type === 'pong') {
+            if (frame.type === 'event' || frame.type === 'result' || frame.type === 'pong' || frame.type === 'tool_request') {
               handlers.onEvent(frame, { replayed: event.payload.replayed === true })
             }
           } catch (error) {
@@ -305,6 +311,19 @@ export async function connectManagedPi(
               error instanceof Error ? error.message : String(error),
             ))
           })
+        })
+      },
+      toolResult(requestId, outcome) {
+        if (closed) return
+        const bound = (text: string, max: number) => {
+          const bytes = new TextEncoder().encode(text)
+          return bytes.byteLength <= max ? text : `${new TextDecoder().decode(bytes.slice(0, max))}…[truncated]`
+        }
+        invokeCurrent('pi_tool_result', {
+          requestId,
+          ok: outcome.ok,
+          result: outcome.ok ? bound(outcome.result, 190 * 1024) : null,
+          error: outcome.ok ? null : bound(outcome.error, 8000),
         })
       },
       close() {

@@ -49,7 +49,7 @@ test('desktop URLs use native portals and native security policy', async () => {
     'src-tauri/src/portal.rs', 'src-tauri/Cargo.toml', 'src-tauri/src/lib.rs', 'src-tauri/capabilities/default.json',
   ].map(path => readFile(`${root}${path}`, 'utf8')))
   assert.match(web, /const nativePortal = isTauri\(\) && !fileMode/)
-  assert.match(web, /<NativePortal ref=\{portalRef\} url=\{src\}/)
+  assert.match(web, /<NativePortal\s+ref=\{portalRef\}\s+url=\{src\}/)
   assert.match(frame, /nativePortal \|\|/)
   assert.match(native, /if \(state\.url\) navigated\.current = state\.url/)
   assert.match(native, /void closePortal\(id\)/)

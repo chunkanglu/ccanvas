@@ -1005,6 +1005,36 @@ textarea {
   background: #fff;
   width: 100%;
 }
+.web__name {
+  width: 92px;
+  height: 22px;
+  flex-shrink: 0;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--accent-bright);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+.web__name--acting,
+.web__driver--acting {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.web__driver {
+  max-width: 120px;
+  overflow: hidden;
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 /* Native WebKit portal target: the real page is a native view drawn here. */
 .web__portal {
   position: relative;

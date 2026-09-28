@@ -334,6 +334,39 @@ pub async fn portal_action(
     .map_err(|e| e.to_string())
 }
 
+const MAX_EVAL_RESULT_BYTES: usize = 192 * 1024;
+const EVAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Run synchronous automation JavaScript in a portal and return its JSON result.
+/// Only the canvas UI can call this (portal pages have no IPC); the frontend
+/// restricts it to browsers an agent is connected to by an arrow.
+#[tauri::command]
+pub async fn portal_eval(
+    app: AppHandle,
+    state: State<'_, PortalManager>,
+    id: String,
+    script: String,
+) -> Result<String, String> {
+    if script.len() > 512 * 1024 {
+        return Err("Portal script is too large".into());
+    }
+    let webview = webview_for(&app, &state, &id)?;
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    webview
+        .eval_with_callback(script, move |result| {
+            let _ = tx.send(result);
+        })
+        .map_err(|e| e.to_string())?;
+    let result = tauri::async_runtime::spawn_blocking(move || rx.recv_timeout(EVAL_TIMEOUT))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|_| "Portal script timed out".to_string())?;
+    if result.len() > MAX_EVAL_RESULT_BYTES {
+        return Err("Portal script result exceeds 192 KiB".into());
+    }
+    Ok(result)
+}
+
 #[tauri::command]
 pub async fn portal_close(
     app: AppHandle,

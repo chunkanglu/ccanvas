@@ -18,6 +18,7 @@ import type {
 import { registerTransport, unregisterTransport, useAgents, ensureNotifyPermission, looksLikePrompt, notify } from '../lib/agents'
 import { useStore, selectActive } from '../store/workspace'
 import { onAgentRunSettled } from '../lib/flow'
+import { executeBrowserRequest } from '../lib/browser-agent'
 import { PI_SETUP_GUIDANCE } from '../lib/pi-launch'
 import { onStructuredToolEvent } from '../lib/tracker'
 import {
@@ -154,6 +155,10 @@ export function PiTerminalBody({ workspaceId, el, active, visible = true }: Prop
           }
         },
         onEvent: (frame, delivery) => {
+          if (frame.type === 'tool_request') {
+            void handleToolRequest(frame.requestId, frame.action, frame.args)
+            return
+          }
           if (frame.type !== 'event') return
           handleEvent(frame, delivery.replayed)
         },
@@ -206,6 +211,27 @@ export function PiTerminalBody({ workspaceId, el, active, visible = true }: Prop
         }
       })
     })
+
+    // canvas_browser: the agent may only reach web widgets joined to it by an
+    // arrow in its own canvas tab. The companion never sees canvas state.
+    async function handleToolRequest(requestId: string, action: string, args: Record<string, unknown>) {
+      const runtime = runtimeRef.current
+      if (!runtime) return
+      try {
+        const workspace = useStore.getState().tabs.find(tab => tab.id === workspaceId)
+        if (!workspace) throw new Error('This agent\'s canvas is not open')
+        const result = await executeBrowserRequest({
+          workspace,
+          agentId: el.id,
+          setUrl: (widgetId, url) => mutateElementInTab(workspaceId, widgetId, current => {
+            if (current.type === 'widget' && current.kind === 'web') current.url = url
+          }),
+        }, { action, args })
+        runtime.toolResult(requestId, { ok: true, result })
+      } catch (error) {
+        runtime.toolResult(requestId, { ok: false, error: error instanceof Error ? error.message : String(error) })
+      }
+    }
 
     function handleEvent(frame: CompanionEvent, replayed: boolean) {
       const event = frame.event

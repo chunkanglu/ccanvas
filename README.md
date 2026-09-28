@@ -27,6 +27,7 @@ knowledge-graph sources. Existing Claude agents stay Claude.
   [Phase 5 Pi-first defaults, usage and knowledge](docs/phase5-pi-first.md) ·
   [Phase 6 hardening and support matrix](docs/phase6-hardening.md) ·
   [Native web portals](docs/native-web-portals.md) ·
+  [Agents driving canvas browsers](docs/agent-browser-control.md) ·
   [Installed-extension compatibility findings](docs/pi-compatibility.md) ·
   [Approved TUI direction and probe](docs/pi-tui-probe.md).
 - Fork releases are manual `pi-v*` draft prereleases; upstream `v*` tags do not
