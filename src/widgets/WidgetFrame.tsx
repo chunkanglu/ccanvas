@@ -100,6 +100,9 @@ export function WidgetFrame({
   const mutateElement = useStore((s) => s.mutateElement)
   const beginHistory = useStore((s) => s.beginHistory)
   const openAgentWizard = useStore((s) => s.openAgentWizard)
+  const activationRequired = useStore(
+    (s) => s.tabs.find((tab) => tab.id === workspaceId)?.activationRequired === true,
+  )
 
   const active = visible && activeWidgetId === el.id
   const Icon = KIND_ICON[el.kind]
@@ -429,7 +432,9 @@ export function WidgetFrame({
           {el.kind === 'video' && <VideoBody el={el} active={active} />}
           {el.kind === 'mediainfo' && <MediaInfoBody el={el} />}
           {el.kind === 'claude' && <KnowledgeGraphBody el={el} />}
-          {isTerminal && (
+          {isTerminal && el.kind === 'agent' && activationRequired ? (
+            <AgentActivationGate el={el} workspaceId={workspaceId} />
+          ) : isTerminal && (
             <TerminalBody
               workspaceId={workspaceId}
               el={el}
@@ -521,5 +526,38 @@ function AgentMeter({ id }: { id: string }) {
     <span className="widget__meter" title={title}>
       {fmtMeter(m, piUsage)}
     </span>
+  )
+}
+
+/** Opened documents cannot launch agent processes until explicitly activated. */
+function AgentActivationGate({ el, workspaceId }: { el: WidgetElement; workspaceId: string }) {
+  const activateWorkspace = useStore((s) => s.activateWorkspace)
+  const harness = el.harness === 'pi' ? 'Pi' : 'Claude'
+  return (
+    <div className="agent-gate">
+      <div className="agent-gate__title">{harness} agent not started</div>
+      <div className="agent-gate__body">
+        This canvas was opened from a file. Review its agents before allowing them to launch.
+      </div>
+      <dl className="agent-gate__facts">
+        <dt>folder</dt>
+        <dd>{el.cwd || 'canvas folder / home'}</dd>
+        {el.model && (
+          <>
+            <dt>model</dt>
+            <dd>{el.provider ? `${el.provider}/${el.model}` : el.model}</dd>
+          </>
+        )}
+        {el.harness !== 'pi' && el.skipPermissions && (
+          <>
+            <dt>warning</dt>
+            <dd className="agent-gate__danger">requests Claude --dangerously-skip-permissions</dd>
+          </>
+        )}
+      </dl>
+      <button className="agent-gate__btn" onClick={() => activateWorkspace(workspaceId)}>
+        Activate this canvas's agents
+      </button>
+    </div>
   )
 }

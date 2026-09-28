@@ -246,6 +246,11 @@ export type Workspace = {
   dir?: string
   /** unsaved changes since last disk write */
   dirty?: boolean
+  /**
+   * Local safety state, never written to `.ccnvs`: agents from an opened file
+   * do not launch until the user reviews and activates the canvas.
+   */
+  activationRequired?: boolean
 }
 
 export const CCNVS_VERSION = 2 as const

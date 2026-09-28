@@ -25,6 +25,7 @@ knowledge-graph sources. Existing Claude agents stay Claude.
   [Phase 3 native agent UX](docs/phase3-agent-ux.md) ·
   [Phase 4 flows and tracking](docs/phase4-flows-tracking.md) ·
   [Phase 5 Pi-first defaults, usage and knowledge](docs/phase5-pi-first.md) ·
+  [Phase 6 hardening and support matrix](docs/phase6-hardening.md) ·
   [Installed-extension compatibility findings](docs/pi-compatibility.md) ·
   [Approved TUI direction and probe](docs/pi-tui-probe.md).
 - Fork releases are manual `pi-v*` draft prereleases; upstream `v*` tags do not
@@ -115,6 +116,7 @@ terminal, or `npm start` to run both at once):
 ```bash
 npm run server     # fork ws + http on 127.0.0.1:7532
 npm start          # runs the pty server and the web app together
+# then open the printed "pair web" URL; the backend rejects unpaired requests
 ```
 
 The backend gives the browser what the sandbox can't: a real shell per terminal

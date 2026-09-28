@@ -210,6 +210,23 @@ export function sendTo(id: string, data: string): boolean {
   return true
 }
 
+/**
+ * Text bound for a TUI/shell PTY is data, not terminal control. Remove escape
+ * and other C0 controls so piped output cannot close bracketed paste, submit
+ * early with a carriage return, or drive terminal escape sequences.
+ */
+export function ptySafeText(text: string): string {
+  return text
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\u0000-\u0008\u000b-\u001f\u007f\u0080-\u009f]/g, '')
+}
+
+/** Wrap sanitized multi-line text as one bracketed paste block. */
+export function ptyPaste(text: string): string {
+  const body = ptySafeText(text)
+  return body.includes('\n') ? `\x1b[200~${body}\x1b[201~` : body
+}
+
 export type AgentDeliveryResult = {
   id: string
   status: 'accepted' | 'offline' | 'rejected' | 'uncertain'
@@ -240,10 +257,7 @@ export async function deliverPrompt(
   if (!transport) return { id, status: 'offline' }
   try {
     if (transport.prompt) await transport.prompt(body, requestId)
-    else {
-      const wrapped = body.includes('\n') ? `\x1b[200~${body}\x1b[201~` : body
-      transport.send(`${wrapped}\r`)
-    }
+    else transport.send(`${ptyPaste(body)}\r`)
     return { id, status: 'accepted' }
   } catch (error) {
     return {
@@ -277,7 +291,7 @@ export function sendPrompt(id: string, text: string, submit = true): boolean {
     })
     return true
   }
-  const wrapped = body.includes('\n') ? `\x1b[200~${body}\x1b[201~` : body
+  const wrapped = ptyPaste(body)
   transport.send(submit ? `${wrapped}\r` : wrapped)
   return true
 }

@@ -35,6 +35,10 @@ function normalizeElements(elements: unknown): CanvasElement[] {
   })
 }
 
+function isAgentElement(element: CanvasElement): boolean {
+  return element.type === 'widget' && element.kind === 'agent'
+}
+
 function normalizeWorkspace(ws: Workspace): Workspace {
   return { ...ws, elements: normalizeElements(ws.elements) }
 }
@@ -64,13 +68,17 @@ export function fromFile(data: CcnvsFile, name: string): Workspace {
   if (!data || data.format !== 'ccnvs' || (data.version !== 1 && data.version !== CCNVS_VERSION)) {
     throw new Error('Unsupported ccanvas workspace format or version')
   }
+  const elements = normalizeElements(data.elements)
   return {
     id: newId(),
     name: data.name || name,
-    elements: normalizeElements(data.elements),
+    elements,
     camera: data.camera ?? { ...DEFAULT_CAMERA },
     createdAt: Date.now(),
     dirty: false,
+    // A layout file can name executables, permission modes, prompts and cwd.
+    // Opening it is not consent to launch those agents.
+    ...(elements.some(isAgentElement) ? { activationRequired: true } : {}),
   }
 }
 

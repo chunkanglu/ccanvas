@@ -7,7 +7,7 @@
 import { invoke, convertFileSrc } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 
-import { BACKEND_HTTP_URL } from './fork'
+import { BACKEND_HTTP_URL, STORAGE_NAMESPACE, storageKey } from './fork'
 
 const BASE = BACKEND_HTTP_URL
 
@@ -16,11 +16,81 @@ export function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 }
 
+// ---------- optional Node backend pairing ----------
+// The web backend authorizes shells, files and commands with a per-start token.
+// Web mode receives it once through `#ccanvas-pair=...`; desktop mode reads the
+// backend's owner-only token file only when it needs the optional proxy.
+const TOKEN_STORAGE = storageKey('backendToken')
+const TOKEN_HEADER = 'x-ccanvas-token'
+let backendToken: string | null = null
+let proxyToken: string | null = null
+let tokenLoad: Promise<void> | null = null
+
+function consumePairingHash(): void {
+  if (typeof window === 'undefined' || isTauri()) return
+  const match = window.location.hash.match(/(?:^#|&)ccanvas-pair=([A-Za-z0-9_-]{43})(?:&|$)/)
+  if (!match) {
+    backendToken = sessionStorage.getItem(TOKEN_STORAGE)
+    return
+  }
+  backendToken = match[1]
+  sessionStorage.setItem(TOKEN_STORAGE, backendToken)
+  history.replaceState(null, '', window.location.pathname + window.location.search)
+}
+consumePairingHash()
+
+async function ensureBackendAuth(): Promise<void> {
+  if (backendToken && proxyToken) return
+  tokenLoad ??= (async () => {
+    if (!backendToken && isTauri()) {
+      try {
+        const home = await invoke<string>('home_dir')
+        const text = await invoke<string>('read_text', {
+          path: joinPath(joinPath(joinPath(home, '.config'), STORAGE_NAMESPACE), 'backend-token.json'),
+        })
+        const token = JSON.parse(text)?.token
+        if (typeof token === 'string' && /^[A-Za-z0-9_-]{43}$/.test(token)) backendToken = token
+      } catch {
+        /* optional backend not running or not paired */
+      }
+    }
+    if (backendToken && !proxyToken) {
+      try {
+        const r = await fetch(BASE + '/session', { headers: { [TOKEN_HEADER]: backendToken } })
+        if (r.ok) proxyToken = (await r.json())?.proxyToken ?? null
+        else if (r.status === 401) {
+          backendToken = null
+          if (!isTauri()) sessionStorage.removeItem(TOKEN_STORAGE)
+        }
+      } catch {
+        /* backend offline */
+      }
+    }
+  })().finally(() => { tokenLoad = null })
+  await tokenLoad
+}
+
+function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  return backendToken ? { ...extra, [TOKEN_HEADER]: backendToken } : extra
+}
+
+function withToken(url: string, token = backendToken): string {
+  if (!token) return url
+  return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`
+}
+
+/** WebSocket capability for the optional Node PTY bridge. */
+export async function backendSocketToken(): Promise<string | null> {
+  await ensureBackendAuth()
+  return backendToken
+}
+
 async function httpGet<T>(path: string, timeoutMs?: number): Promise<T> {
   const ctrl = timeoutMs ? new AbortController() : null
   const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null
   try {
-    const r = await fetch(BASE + path, { signal: ctrl?.signal })
+    await ensureBackendAuth()
+    const r = await fetch(BASE + path, { signal: ctrl?.signal, headers: authHeaders() })
     if (!r.ok) throw new Error(`${path} → ${r.status}`)
     return (await r.json()) as T
   } finally {
@@ -32,8 +102,7 @@ async function httpGet<T>(path: string, timeoutMs?: number): Promise<T> {
 export async function backendOnline(): Promise<boolean> {
   if (isTauri()) return true
   try {
-    await httpGet<{ ok: boolean }>('/health', 700)
-    return true
+    return (await httpGet<{ authenticated?: boolean }>('/health', 700)).authenticated === true
   } catch {
     return false
   }
@@ -266,9 +335,10 @@ export async function runCommand(
     }
   }
   try {
+    await ensureBackendAuth()
     const r = await fetch(BASE + '/run', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ program, args, cwd }),
     })
     if (!r.ok) return null
@@ -288,9 +358,10 @@ export async function saveFile(path: string, content: string): Promise<boolean> 
     }
   }
   try {
+    await ensureBackendAuth()
     const r = await fetch(BASE + '/save', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ path, content }),
     })
     return r.ok
@@ -314,7 +385,8 @@ export async function revealPath(path: string): Promise<void> {
     }
   }
   try {
-    await fetch(`${BASE}/reveal?path=${encodeURIComponent(path)}`)
+    await ensureBackendAuth()
+    await fetch(`${BASE}/reveal?path=${encodeURIComponent(path)}`, { headers: authHeaders() })
   } catch {
     /* backend offline — nothing we can do from the sandbox */
   }
@@ -335,7 +407,8 @@ export async function openExternal(url: string): Promise<void> {
 
 /** URL that routes through the backend proxy (strips X-Frame-Options/CSP). */
 export function proxyUrl(target: string): string {
-  return `${BASE}/proxy?url=${encodeURIComponent(target)}`
+  // Proxied pages can read their own URL, so they receive only the proxy token.
+  return withToken(`${BASE}/proxy?url=${encodeURIComponent(target)}`, proxyToken)
 }
 
 /**
@@ -354,7 +427,7 @@ export function mediaUrl(path: string): string | null {
       return null
     }
   }
-  return `${BASE}/file?path=${encodeURIComponent(path)}`
+  return withToken(`${BASE}/file?path=${encodeURIComponent(path)}`)
 }
 
 /**
@@ -377,8 +450,8 @@ export async function mediaEndpoint(): Promise<MediaEndpoint | null> {
     }
   }
   try {
-    const r = await httpGet<{ ok: boolean; ffmpeg?: boolean }>('/health', 800)
-    return r.ok ? { base: BASE, ffmpeg: !!r.ffmpeg } : null
+    const r = await httpGet<{ authenticated?: boolean; ffmpeg?: boolean }>('/health', 800)
+    return r.authenticated ? { base: BASE, ffmpeg: !!r.ffmpeg } : null
   } catch {
     return null
   }
@@ -390,7 +463,8 @@ export async function mediaEndpoint(): Promise<MediaEndpoint | null> {
  * (tested) server as transcode/probe rather than the asset protocol.
  */
 export function fileStreamUrl(base: string, path: string): string {
-  return `${base}/file?path=${encodeURIComponent(path)}`
+  const url = `${base}/file?path=${encodeURIComponent(path)}`
+  return base === BASE ? withToken(url) : url
 }
 
 /**
@@ -399,7 +473,8 @@ export function fileStreamUrl(base: string, path: string): string {
  */
 export function transcodeUrl(base: string, path: string, start = 0): string {
   const q = start > 0 ? `&start=${Math.floor(start)}` : ''
-  return `${base}/transcode?path=${encodeURIComponent(path)}${q}`
+  const url = `${base}/transcode?path=${encodeURIComponent(path)}${q}`
+  return base === BASE ? withToken(url) : url
 }
 
 /** Rich media metadata from ffprobe (drives the media-info widget). */
@@ -474,6 +549,7 @@ export async function probeMedia(base: string, path: string): Promise<MediaInfo>
     const timer = setTimeout(() => ctrl.abort(), 6000)
     const r = await fetch(`${base}/probe?path=${encodeURIComponent(path)}`, {
       signal: ctrl.signal,
+      headers: base === BASE ? authHeaders() : {},
     })
     clearTimeout(timer)
     if (!r.ok) return EMPTY_MEDIA_INFO
@@ -490,8 +566,8 @@ export async function probeMedia(base: string, path: string): Promise<MediaInfo>
  */
 export async function proxyAvailable(): Promise<boolean> {
   try {
-    await httpGet<{ ok: boolean }>('/health', 700)
-    return true
+    const health = await httpGet<{ authenticated?: boolean }>('/health', 700)
+    return health.authenticated === true && !!proxyToken
   } catch {
     return false
   }

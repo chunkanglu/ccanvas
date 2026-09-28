@@ -64,6 +64,8 @@ struct RuntimeSession {
     attachment_id: String,
     open_epoch: u64,
     launch: LaunchIdentity,
+    /// Canonical session file this process was launched to resume, if any.
+    session_lease: Option<PathBuf>,
     root_pid: u32,
     master: Box<dyn MasterPty + Send>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
@@ -252,6 +254,19 @@ fn working_directory(value: &str) -> Result<String, String> {
     Ok(path.to_string_lossy().into_owned())
 }
 
+/// Pi session JSONL files have one writer. Another live managed runtime that
+/// resumed the same canonical file must be closed before this one may launch.
+fn session_lease_conflict<'a>(
+    requester: &str,
+    lease: &Path,
+    owners: impl IntoIterator<Item = (&'a str, Option<&'a Path>, bool)>,
+) -> Option<String> {
+    owners
+        .into_iter()
+        .find(|(id, owned, alive)| *alive && *id != requester && *owned == Some(lease))
+        .map(|(id, _, _)| id.to_string())
+}
+
 fn exact_session_file(value: Option<String>) -> Result<Option<String>, String> {
     let Some(value) = value else { return Ok(None) };
     if !valid_text(&value, 8192) {
@@ -386,7 +401,7 @@ fn companion_extension(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 #[cfg(unix)]
-fn capability_token() -> Result<String, String> {
+pub(crate) fn capability_token() -> Result<String, String> {
     let mut bytes = [0u8; 32];
     File::open("/dev/urandom")
         .and_then(|mut file| file.read_exact(&mut bytes))
@@ -395,11 +410,11 @@ fn capability_token() -> Result<String, String> {
 }
 
 #[cfg(windows)]
-fn capability_token() -> Result<String, String> {
+pub(crate) fn capability_token() -> Result<String, String> {
     Err("Managed Pi capability generation is not implemented on Windows yet".into())
 }
 
-fn constant_time_eq(left: &str, right: &str) -> bool {
+pub(crate) fn constant_time_eq(left: &str, right: &str) -> bool {
     if left.len() != right.len() {
         return false;
     }
@@ -1271,6 +1286,37 @@ pub fn pi_open(
     validate_model_part(&request.model, "model")?;
     validate_thinking_level(&request.thinking_level)?;
     let session_file = exact_session_file(request.session_file.clone())?;
+    let session_lease = match &session_file {
+        Some(path) => Some(std::fs::canonicalize(path).map_err(|e| e.to_string())?),
+        None => None,
+    };
+    if let Some(lease) = &session_lease {
+        let owners: Vec<(String, Option<PathBuf>, bool)> = inner
+            .sessions
+            .iter_mut()
+            .map(|(id, session)| {
+                (
+                    id.clone(),
+                    session.session_lease.clone(),
+                    matches!(session.child.try_wait(), Ok(None)),
+                )
+            })
+            .collect();
+        if session_lease_conflict(
+            &request.id,
+            lease,
+            owners
+                .iter()
+                .map(|(id, owned, alive)| (id.as_str(), owned.as_deref(), *alive)),
+        )
+        .is_some()
+        {
+            return Err(
+                "This Pi session is already open in another ccanvas agent. Close that agent first; Pi sessions support one writer."
+                    .into(),
+            );
+        }
+    }
 
     let generation = inner
         .generations
@@ -1342,6 +1388,7 @@ pub fn pi_open(
             widget_id: request.widget_id.clone(),
             attachment_id: request.attachment_id.clone(),
             open_epoch: request.open_epoch,
+            session_lease,
             launch,
             root_pid: child_pid,
             master: pair.master,
@@ -1839,6 +1886,28 @@ mod tests {
             tool: None,
         })
         .is_err());
+    }
+
+    #[test]
+    fn session_leases_allow_one_live_writer() {
+        let file = Path::new("/sessions/a.jsonl");
+        let other = Path::new("/sessions/b.jsonl");
+        assert_eq!(
+            session_lease_conflict("ws2:agent", file, [("ws1:agent", Some(file), true)]),
+            Some("ws1:agent".into())
+        );
+        assert_eq!(
+            session_lease_conflict("ws2:agent", file, [("ws1:agent", Some(file), false)]),
+            None
+        );
+        assert_eq!(
+            session_lease_conflict("ws1:agent", file, [("ws1:agent", Some(file), true)]),
+            None
+        );
+        assert_eq!(
+            session_lease_conflict("ws2:agent", file, [("ws1:agent", Some(other), true)]),
+            None
+        );
     }
 
     #[test]

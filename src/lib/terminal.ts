@@ -11,7 +11,7 @@
 
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { isTauri } from './backend'
+import { backendSocketToken, isTauri } from './backend'
 import { BACKEND_WS_URL } from './fork'
 
 export type Term = {
@@ -112,12 +112,15 @@ async function connectTauri(opts: PtyOpts, h: PtyHandlers): Promise<Term | null>
   }
 }
 
-function connectWebSocket(opts: PtyOpts, h: PtyHandlers): Promise<Term | null> {
+async function connectWebSocket(opts: PtyOpts, h: PtyHandlers): Promise<Term | null> {
+  const token = await backendSocketToken()
+  if (!token) return null
   return new Promise((resolve) => {
     let ws: WebSocket
     const query =
       `?id=${encodeURIComponent(opts.id)}&cols=${opts.cols}&rows=${opts.rows}` +
-      (opts.cwd ? `&cwd=${encodeURIComponent(opts.cwd)}` : '')
+      (opts.cwd ? `&cwd=${encodeURIComponent(opts.cwd)}` : '') +
+      `&token=${encodeURIComponent(token)}`
     try {
       ws = new WebSocket(WS_URL + query)
     } catch {

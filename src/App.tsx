@@ -21,6 +21,7 @@ import { PromptLibrary } from './ui/PromptLibrary'
 import { Checkpoints } from './ui/Checkpoints'
 import { CanvasSearch } from './ui/CanvasSearch'
 import { TrackingBar } from './ui/TrackingBar'
+import { ActivationBar } from './ui/ActivationBar'
 import { FollowController } from './ui/FollowController'
 
 // topbar (44) + tabs (38); keep in sync with --topbar-h / --tabs-h in global.css
@@ -248,6 +249,7 @@ export default function App() {
         <SelectionBar />
         <AttentionBar />
         <TrackingBar />
+        <ActivationBar />
         <Minimap />
         <Hud />
         <CommandPalette />

@@ -53,6 +53,10 @@ Automated tests cover default creation, legacy compatibility, profiles, launcher
 
 Installed-app checks cover every creation path, missing-launcher guidance, Claude legacy/handoff, usage scope and unknown context, Markdown/legacy graph sources, and normal Pi extensions/intercom/yaks.
 
+## Deferred decisions
+
+- **Knowledge graph fate (decided 2026-09-25: keep for now).** It is preserved upstream functionality, not a demonstrated Pi workflow need; Obsidian already provides a richer graph. Revisit after real use: remove it while keeping old documents openable, hide it behind the command palette, or redesign it around Pi session/resource views.
+
 ## What is not done
 
 - No transcript conversion between harnesses.

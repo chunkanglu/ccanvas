@@ -309,6 +309,8 @@ export type Store = {
 
   // ----- agent wizard -----
   openAgentWizard: (ctx: AgentWizardCtx) => void
+  /** Explicitly allow agents in an opened document to launch. */
+  activateWorkspace: (id: string) => void
   closeAgentWizard: () => void
 
   // ----- snap guides -----
@@ -1269,6 +1271,10 @@ export const useStore = create<Store>((set, get) => ({
 
   // ---------- agent wizard ----------
   openAgentWizard: (ctx) => set({ agentWizard: ctx }),
+  activateWorkspace: (id) =>
+    set((s) => ({
+      tabs: s.tabs.map((tab) => (tab.id === id ? { ...tab, activationRequired: false } : tab)),
+    })),
   closeAgentWizard: () => set({ agentWizard: null }),
 
   // ---------- snap guides ----------

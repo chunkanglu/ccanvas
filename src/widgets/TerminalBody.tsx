@@ -18,7 +18,9 @@ import {
   scrapeCost,
   ensureNotifyPermission,
   notify,
+  ptyPaste,
 } from '../lib/agents'
+import { safeClaudeModel, safeClaudeSessionId, shellSafeTitle } from '../lib/claude-launch'
 import { onAgentTurnComplete, cleanAgentOutput } from '../lib/flow'
 import { PiTerminalBody } from './PiTerminalBody'
 
@@ -89,17 +91,22 @@ function PtyTerminalBody({ workspaceId, el, active, visible = true }: TerminalBo
   // (`--session-id`); a reopened agent resumes it (`--resume`). Model and
   // skip-permission flags are appended. Reused by the resume self-heal path.
   const buildAgentLaunch = (sessionId: string | undefined, started: boolean) => {
-    const base = sessionId
+    // This string is typed into a shell. Portable document fields are
+    // untrusted, so only fixed-format values may reach it.
+    const safeSession = safeClaudeSessionId(sessionId)
+    const base = safeSession
       ? started
-        ? `claude --resume ${sessionId}`
-        : `claude --session-id ${sessionId}`
+        ? `claude --resume ${safeSession}`
+        : `claude --session-id ${safeSession}`
       : 'claude'
     const flags: string[] = []
     // name the session at creation via the flag (deterministic, no TUI timing);
     // on resume the name already persists. Live renames go through /rename.
-    if (sessionId && !started && el.title && el.title !== 'claude agent')
-      flags.push(`--name "${el.title.replace(/["`$\\]/g, '')}"`)
-    if (el.model) flags.push(`--model ${el.model}`)
+    const safeTitle = shellSafeTitle(el.title)
+    if (safeSession && !started && safeTitle && safeTitle !== 'claude agent' && safeTitle !== 'agent')
+      flags.push(`--name "${safeTitle}"`)
+    const safeModel = safeClaudeModel(el.model)
+    if (safeModel) flags.push(`--model ${safeModel}`)
     if (el.skipPermissions) flags.push('--dangerously-skip-permissions')
     return [base, ...flags].join(' ')
   }
@@ -580,7 +587,7 @@ function PtyTerminalBody({ workspaceId, el, active, visible = true }: TerminalBo
               launchTasks.push({ data: `/color ${cn}`, enter: true })
             // first launch only: the initial prompt (no \r so you can review it)
             if (!el.agentStarted && el.agentPrompt)
-              launchTasks.push({ data: el.agentPrompt, enter: false })
+              launchTasks.push({ data: ptyPaste(el.agentPrompt), enter: false })
           }
           // safety net: become ready even if Claude's UI is never detected, so
           // the session is marked resumable, the queue isn't stranded, and flow
