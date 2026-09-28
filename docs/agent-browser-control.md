@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented on `fork/agent-browser-control`; installed-app acceptance pending.
+Implemented and accepted on `fork/agent-browser-control`. Acceptance found a macOS alignment bug and it was fixed: Tauri's full-size content view extends under the title bar, so child webviews sat one title-bar height too high and covered the widget bar. Portals now add the measured page-viewport inset, which is re-measured on viewport changes such as fullscreen.
 
 ## Why not browser-use itself
 
