@@ -30,6 +30,10 @@ Instead, Pi agents get a native `canvas_browser` tool with browser-use's workflo
 | `wait` | For page load or visible text |
 | `js` | Evaluate a synchronous expression; JSON result |
 
+## Deferred decision
+
+**Chromium engine (2026-09-28): kept native WebKit for now.** Tauri renders with WebKit on macOS and WebKitGTK on Linux, so neither is Chromium-based; Tauri's CEF runtime is unreleased. If Chrome-engine or Linux support is revived, the recommended spike is streaming a CDP-controlled installed Chrome into DOM widgets. That would give trusted input, screenshots, cross-platform behavior, and optional browser-use attachment, at the cost of streaming latency and possible sign-in blocking. An Electron shell is the fallback.
+
 ## Limits
 
 - Input is synthetic DOM events (`isTrusted: false`). Most sites work, but some that require trusted input, drag-and-drop, file pickers, or canvas-rendered UIs do not.
