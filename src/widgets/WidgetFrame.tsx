@@ -30,6 +30,7 @@ import {
 } from '../ui/icons'
 import { agentRuntimeId, useAgents, sendTo, sendPrompt, renameSession, isLive as isSessionLive, type AgentMetrics, type PiSessionUsage } from '../lib/agents'
 import { CANVAS_FILE_DROP_EVENT } from '../lib/canvas-file-drag'
+import { isTauri } from '../lib/backend'
 import { NoteBody } from './NoteBody'
 import { WebBody } from './WebBody'
 import { TerminalBody } from './TerminalBody'
@@ -111,8 +112,12 @@ export function WidgetFrame({
   const isTerminal = el.kind === 'terminal' || el.kind === 'agent'
   const sessionId = agentRuntimeId(workspaceId, el)
   // app-like panels also interact on a single click (no double-click shield)
+  // Desktop web URLs are native portals: the page itself handles input, so a
+  // DOM shield would only hide it.
+  const nativePortal = el.kind === 'web' && !el.path && isTauri()
   const isLive =
     isTerminal ||
+    nativePortal ||
     el.kind === 'files' ||
     el.kind === 'diff' ||
     el.kind === 'editor' ||

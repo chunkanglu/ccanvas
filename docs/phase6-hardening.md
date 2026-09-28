@@ -51,7 +51,7 @@ Opening the same canvas twice could resume one Pi session file from two processe
 - Tauri keeps `csp: null` and asset-protocol scope `**`; web previews, local HTML, media, and Monaco depend on them. Narrowing them needs a separate compatibility pass.
 - Session leases cover managed runtimes in one app process and the file each agent launched with. They do not detect Pi TUIs outside ccanvas, a second app instance, or sessions switched inside the TUI.
 - Template naming, checkpoint labels, and Git-panel repo/branch prompts use `window.prompt`/`confirm`, which the macOS webview ignores.
-- The web widget is an `<iframe>`. In the desktop app, sites that forbid framing via `X-Frame-Options`/`frame-ancestors`, and plain `http://` non-localhost pages blocked as mixed content, do not render. The only workaround is the optional paired Node proxy, which is partial: logins, cookies, and cross-origin APIs often fail.
+- The web widget was an `<iframe>`, so framing-restricted and non-localhost `http://` sites failed in the desktop app. Addressed by [native web portals](native-web-portals.md).
 - Managed Pi agents require the desktop app. The web backend does not host the Pi companion runtime.
 - Windows lacks capability generation and Job Object process ownership, so managed Pi fails visibly.
 

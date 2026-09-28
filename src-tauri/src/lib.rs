@@ -2,11 +2,13 @@
 mod files;
 mod media;
 mod pi_runtime;
+mod portal;
 mod pty;
 mod usage;
 mod watch;
 
 use pi_runtime::PiRuntimeManager;
+use portal::PortalManager;
 use pty::PtyManager;
 use watch::WatchManager;
 
@@ -16,6 +18,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(PtyManager::default())
         .manage(PiRuntimeManager::default())
+        .manage(PortalManager::default())
         .manage(WatchManager::default())
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -59,6 +62,11 @@ pub fn run() {
             pi_runtime::pi_kill,
             pi_runtime::pi_kill_current,
             pi_runtime::pi_launcher_status,
+            portal::portal_open,
+            portal::portal_bounds,
+            portal::portal_navigate,
+            portal::portal_action,
+            portal::portal_close,
             watch::watch_start,
             watch::watch_stop,
         ])

@@ -1005,6 +1005,25 @@ textarea {
   background: #fff;
   width: 100%;
 }
+/* Native WebKit portal target: the real page is a native view drawn here. */
+.web__portal {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  background: var(--bg);
+}
+.web__portal-msg {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-align: center;
+}
 .web__empty {
   flex: 1;
   display: grid;
