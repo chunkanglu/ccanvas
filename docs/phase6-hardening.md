@@ -2,7 +2,9 @@
 
 ## Status
 
-In progress on `fork/phase6-hardening`.
+Implemented and accepted on `fork/phase6-hardening`. Kang accepted the installed release build. During acceptance he noted that the web widget cannot load arbitrary pages; this is the inherited iframe design, not a Phase 6 regression, and is tracked separately.
+
+Automated evidence: Stage 0 10, Phase 1 3, Phase 2 17, Phase 3 3, Phase 4 9, Phase 5 9, Phase 6 8, installer 10, Rust 15, build, fmt/clippy `-D warnings`, the actual Pi companion probe, and a live paired-backend probe.
 
 ## Security fixes
 
@@ -49,6 +51,7 @@ Opening the same canvas twice could resume one Pi session file from two processe
 - Tauri keeps `csp: null` and asset-protocol scope `**`; web previews, local HTML, media, and Monaco depend on them. Narrowing them needs a separate compatibility pass.
 - Session leases cover managed runtimes in one app process and the file each agent launched with. They do not detect Pi TUIs outside ccanvas, a second app instance, or sessions switched inside the TUI.
 - Template naming, checkpoint labels, and Git-panel repo/branch prompts use `window.prompt`/`confirm`, which the macOS webview ignores.
+- The web widget is an `<iframe>`. In the desktop app, sites that forbid framing via `X-Frame-Options`/`frame-ancestors`, and plain `http://` non-localhost pages blocked as mixed content, do not render. The only workaround is the optional paired Node proxy, which is partial: logins, cookies, and cross-origin APIs often fail.
 - Managed Pi agents require the desktop app. The web backend does not host the Pi companion runtime.
 - Windows lacks capability generation and Job Object process ownership, so managed Pi fails visibly.
 
