@@ -11,13 +11,16 @@ import {
   resolvePath,
   baseName,
   isAbsolutePath,
+  isTauri,
 } from '../lib/backend'
+import { NativePortal, type NativePortalHandle } from './NativePortal'
+import type { PortalState } from '../lib/portal'
 import { IconReload, IconWeb, IconFile } from '../ui/icons'
 
 // Web preview widget. Two modes, stored on the same widget:
-//   • URL  (el.url)  — an http(s) page in an iframe. Localhost dev servers embed
-//     directly; sites that send X-Frame-Options / CSP load through the backend
-//     proxy (which strips those headers) or open in a real browser.
+//   • URL  (el.url)  — in the desktop app, a native WebKit portal drawn over the
+//     canvas, so framing-restricted and logged-in sites work. In web mode, an
+//     iframe (optionally through the paired backend proxy).
 //   • File (el.path) — a local .html file rendered via the iframe's srcDoc from
 //     its contents (read through the backend), watched on disk for live reload.
 // The two are mutually exclusive; setting one clears the other.
@@ -50,8 +53,11 @@ export function WebBody({ el, active }: { el: WidgetElement; active: boolean }) 
   const [canProxy, setCanProxy] = useState(false)
   const [fileHtml, setFileHtml] = useState<string | null>(null)
   const frameRef = useRef<HTMLIFrameElement>(null)
+  const portalRef = useRef<NativePortalHandle>(null)
+  const [pageTitle, setPageTitle] = useState<string>()
 
   const fileMode = !!el.path
+  const nativePortal = isTauri() && !fileMode
   const abs = resolvePath(el.cwd, el.path ?? '')
 
   useEffect(() => {
@@ -134,14 +140,39 @@ export function WebBody({ el, active }: { el: WidgetElement; active: boolean }) 
   const effectiveSrc = src ? (proxied && canProxy ? proxyUrl(src) : src) : ''
   const externalTarget = fileMode ? abs : src
 
+  const onPortalState = (state: PortalState) => {
+    if (state.title !== undefined) setPageTitle(state.title)
+    if (!state.url || state.loading || state.url === 'about:blank') return
+    const current = state.url
+    setInput(current)
+    setSrc(current)
+    if (current !== el.url) {
+      mutateElement(el.id, (w) => {
+        const x = w as WidgetElement
+        x.url = current
+      })
+    }
+  }
+
   const reload = () => {
     if (fileMode) void loadFile()
+    else if (nativePortal) portalRef.current?.action('reload')
     else if (frameRef.current) frameRef.current.src = effectiveSrc
   }
 
   return (
     <div className="web">
       <div className="web__bar">
+        {nativePortal && (
+          <>
+            <button className="web__nav" title="Back" onClick={() => portalRef.current?.action('back')}>
+              ‹
+            </button>
+            <button className="web__nav" title="Forward" onClick={() => portalRef.current?.action('forward')}>
+              ›
+            </button>
+          </>
+        )}
         <button className="web__nav" title="Reload" onClick={reload}>
           <IconReload />
         </button>
@@ -156,6 +187,7 @@ export function WebBody({ el, active }: { el: WidgetElement; active: boolean }) 
           className="web__url"
           value={input}
           placeholder="localhost:3000  ·  url  ·  ./index.html…"
+          title={pageTitle}
           spellCheck={false}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
@@ -170,7 +202,7 @@ export function WebBody({ el, active }: { el: WidgetElement; active: boolean }) 
             live
           </span>
         )}
-        {!fileMode && canProxy && (
+        {!fileMode && !nativePortal && canProxy && (
           <button
             className={`web__nav web__toggle${proxied ? ' web__toggle--on' : ''}`}
             title={
@@ -212,6 +244,8 @@ export function WebBody({ el, active }: { el: WidgetElement; active: boolean }) 
             </div>
           </div>
         )
+      ) : nativePortal && src ? (
+        <NativePortal ref={portalRef} url={src} onState={onPortalState} />
       ) : effectiveSrc ? (
         <iframe
           ref={frameRef}
@@ -228,9 +262,15 @@ export function WebBody({ el, active }: { el: WidgetElement; active: boolean }) 
             Enter a URL above, or open a local <b>.html</b> file with the{' '}
             <b>file</b> button — it live-reloads on save.
             <br />
-            Local dev servers embed directly (e.g. localhost:5173).
-            <br />
-            Other sites: use <b>proxy</b> or <b>↗</b> to open in a browser.
+            {nativePortal ? (
+              <>Any site, including logged-in ones, opens in a native browser view.</>
+            ) : (
+              <>
+                Local dev servers embed directly (e.g. localhost:5173).
+                <br />
+                Other sites: use <b>proxy</b> or <b>↗</b> to open in a browser.
+              </>
+            )}
           </div>
         </div>
       )}
