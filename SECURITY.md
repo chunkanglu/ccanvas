@@ -2,11 +2,13 @@
 
 ## Personal fork status
 
-Phase 0 isolated this fork, but it still inherits upstream's permissive local
-bridge and Tauri capabilities. Separate ports/app data prevent accidental collisions; they are
-**not** an authentication or sandbox boundary. Keep the optional backend stopped
-when not needed. Pi control endpoints must not be added until the bridge's
-origin/authentication boundary is implemented. Upstream policy follows.
+Phase 6 closed the inherited local-bridge exposure: the optional web backend now
+requires a per-start pairing token, checks Host and Origin, and never uses
+wildcard CORS. The desktop media server requires a per-launch capability, opened
+`.ccnvs` agents require explicit activation, document-controlled Claude launch
+fields are validated, and Pi session files have one managed writer. Residual
+limits, including Tauri `csp: null` and asset scope `**`, are listed in
+[docs/phase6-hardening.md](docs/phase6-hardening.md). Upstream policy follows.
 
 ## Supported versions
 
@@ -46,7 +48,8 @@ machine**:
   (in-process in the desktop app, or via the `server/pty-server.mjs` backend in
   the browser).
 - The web-mode backend binds to `127.0.0.1:7532` in this fork and exposes shell + filesystem
-  access to local clients. **Do not expose this port to untrusted networks.**
+  access only to requests carrying its per-start pairing token. **Do not expose
+  this port to untrusted networks or share the printed pairing URL.**
 - `.ccnvs` workspace files describe widgets and layout. Treat workspace files
   from untrusted sources with the same caution you would any project you clone
   and run.

@@ -22,11 +22,29 @@ import http from 'node:http'
 import nodePath from 'node:path'
 import { promises as fs, createReadStream } from 'node:fs'
 import { execFile, spawn } from 'node:child_process'
+import { allowedOrigins, createBackendGuard, createBackendToken } from './request-guard.mjs'
 
 // Shared with the frontend; do not fall back to upstream's live backend.
 const fork = JSON.parse(await fs.readFile(new URL('../fork.config.json', import.meta.url), 'utf8'))
 const PORT = fork.backendPort
 const HOST = '127.0.0.1'
+// Fresh capabilities on every start. The master token authorizes files,
+// commands and shells; the proxy token can only fetch preview pages.
+const BACKEND_TOKEN = createBackendToken()
+const PROXY_TOKEN = createBackendToken()
+const guard = createBackendGuard({ port: PORT, token: BACKEND_TOKEN, origins: allowedOrigins(fork) })
+const proxyGuard = createBackendGuard({ port: PORT, token: PROXY_TOKEN, origins: allowedOrigins(fork) })
+const TOKEN_FILE = nodePath.join(
+  process.env.XDG_CONFIG_HOME || nodePath.join(os.homedir(), '.config'),
+  fork.storageNamespace,
+  'backend-token.json',
+)
+const cors = res => res.ccanvasCors ?? { Vary: 'Origin' }
+// Served content (previews/media) must not run with this API's origin.
+const SANDBOX_HEADERS = {
+  'Content-Security-Policy': 'sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads',
+  'X-Content-Type-Options': 'nosniff',
+}
 
 let pty
 let WebSocketServer
@@ -161,9 +179,7 @@ async function revealInManager(p) {
 function send(res, code, obj) {
   res.writeHead(code, {
     'Content-Type': 'application/json',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    ...cors(res),
   })
   res.end(JSON.stringify(obj))
 }
@@ -291,7 +307,8 @@ async function streamFile(req, res, p) {
   const type = mediaType(p)
   const range = req.headers.range
   const baseHeaders = {
-    'Access-Control-Allow-Origin': '*',
+    ...cors(res),
+    ...SANDBOX_HEADERS,
     'Content-Type': type,
     'Accept-Ranges': 'bytes',
     'Cache-Control': 'no-cache',
@@ -462,7 +479,8 @@ function transcodeFile(req, res, p, start) {
   }
   res.writeHead(200, {
     'Content-Type': 'video/mp4',
-    'Access-Control-Allow-Origin': '*',
+    ...cors(res),
+    ...SANDBOX_HEADERS,
     'Cache-Control': 'no-cache',
   })
   child.stdout.pipe(res)
@@ -478,19 +496,27 @@ function transcodeFile(req, res, p, start) {
 }
 
 const server = http.createServer(async (req, res) => {
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204, {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
-    })
+  const url = new URL(req.url, 'http://localhost')
+  res.ccanvasCors = guard.corsHeaders(req.headers.origin)
+  const auth = (url.pathname === '/proxy' ? proxyGuard : guard).checkHttp(req, url)
+  if (!auth.ok) return send(res, auth.status, { error: auth.error })
+  if (auth.preflight) {
+    res.writeHead(204, cors(res))
     return res.end()
   }
-  const url = new URL(req.url, 'http://localhost')
+  if (auth.publicHealth) return send(res, 200, { ok: true, auth: 'token' })
   try {
     switch (url.pathname) {
       case '/health':
-        return send(res, 200, { ok: true, platform: process.platform, home: homeDir, ffmpeg: hasFfmpeg })
+        return send(res, 200, {
+          ok: true,
+          authenticated: true,
+          platform: process.platform,
+          home: homeDir,
+          ffmpeg: hasFfmpeg,
+        })
+      case '/session':
+        return send(res, 200, { proxyToken: PROXY_TOKEN })
       case '/default-dir':
         return send(res, 200, { path: homeDir })
       case '/usage':
@@ -584,7 +610,8 @@ const server = http.createServer(async (req, res) => {
           const buf = Buffer.from(await upstream.arrayBuffer())
           const headers = {
             'Content-Type': ct,
-            'Access-Control-Allow-Origin': '*',
+            ...cors(res),
+            ...SANDBOX_HEADERS,
           }
           if (ct.includes('text/html')) {
             let html = buf.toString('utf8')
@@ -639,7 +666,10 @@ const server = http.createServer(async (req, res) => {
 
 // ---------- terminal bridge (WebSocket on the same server) ----------
 
-const wss = new WebSocketServer({ server })
+const wss = new WebSocketServer({
+  server,
+  verifyClient: ({ req }) => guard.checkUpgrade(req, new URL(req.url, 'http://localhost')),
+})
 
 wss.on('connection', (socket, req) => {
   const url = new URL(req.url, 'http://localhost')
@@ -698,11 +728,35 @@ wss.on('connection', (socket, req) => {
   term.onExit(() => socket.readyState === socket.OPEN && socket.close())
 })
 
-server.listen(PORT, HOST, () => {
+async function writeTokenFile() {
+  await fs.mkdir(nodePath.dirname(TOKEN_FILE), { recursive: true, mode: 0o700 })
+  await fs.writeFile(TOKEN_FILE, JSON.stringify({ token: BACKEND_TOKEN, port: PORT, pid: process.pid }), { mode: 0o600 })
+  await fs.chmod(TOKEN_FILE, 0o600)
+}
+async function removeTokenFile() {
+  try {
+    const current = JSON.parse(await fs.readFile(TOKEN_FILE, 'utf8'))
+    if (current.pid === process.pid) await fs.unlink(TOKEN_FILE)
+  } catch {
+    /* already absent or replaced by another server */
+  }
+}
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.once(signal, () => { void removeTokenFile().finally(() => process.exit(0)) })
+}
+
+server.listen(PORT, HOST, async () => {
+  try {
+    await writeTokenFile()
+  } catch (err) {
+    console.error(`! could not write desktop pairing file ${TOKEN_FILE}: ${err?.message ?? err}`)
+  }
   console.log('\x1b[38;2;217;120;90m✦ ccanvas Pi backend\x1b[0m')
   console.log(`  listening  ws + http://${HOST}:${PORT}`)
   console.log(`  shell      ${defaultShell}`)
   console.log(`  home       ${homeDir}`)
   console.log(`  host       ${os.hostname()} (${process.platform})`)
-  console.log('  ready — open a terminal widget in ccanvas.\n')
+  console.log(`  pair web   http://127.0.0.1:${fork.devPort}/#ccanvas-pair=${BACKEND_TOKEN}`)
+  console.log(`  desktop    ${TOKEN_FILE} (0600, rotated each start)`)
+  console.log('  ready — open the pairing URL, then a terminal widget in ccanvas.\n')
 })

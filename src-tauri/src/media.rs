@@ -4,8 +4,9 @@
 // its own, with no separate Node backend running.
 //
 // Hand-rolled on std::net so it needs no extra crates. Bound to a random
-// loopback port at startup; the frontend gets the URL via the `media_info`
-// command and points <video> at it (or at the asset protocol for direct play).
+// loopback port at startup. Every route is behind a per-launch OS-random
+// capability path segment: a random port is discoverable by local port scans,
+// while the capability is only returned to the app through `media_info`.
 
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{TcpListener, TcpStream};
@@ -14,6 +15,7 @@ use std::sync::OnceLock;
 use std::thread;
 
 static PORT: OnceLock<u16> = OnceLock::new();
+static CAPABILITY: OnceLock<String> = OnceLock::new();
 static HAS_FFMPEG: OnceLock<bool> = OnceLock::new();
 
 fn ffmpeg_bin() -> String {
@@ -44,9 +46,21 @@ pub fn has_ffmpeg() -> bool {
     })
 }
 
-/// Base URL of the embedded server once started, e.g. http://127.0.0.1:52341.
+/// Capability base URL once started, e.g. http://127.0.0.1:52341/m/<secret>.
 pub fn base_url() -> Option<String> {
-    PORT.get().map(|p| format!("http://127.0.0.1:{p}"))
+    let port = PORT.get()?;
+    let capability = CAPABILITY.get()?;
+    Some(format!("http://127.0.0.1:{port}/m/{capability}"))
+}
+
+/// Strip and verify the capability prefix; unauthenticated routes look absent.
+fn authorized_route<'a>(path: &'a str, capability: &str) -> Option<&'a str> {
+    let rest = path.strip_prefix("/m/")?;
+    let (candidate, route) = rest.split_once('/')?;
+    if !crate::pi_runtime::constant_time_eq(candidate, capability) {
+        return None;
+    }
+    Some(&path[path.len() - route.len() - 1..])
 }
 
 /// Start the server once, on a background thread. Non-fatal on failure.
@@ -54,6 +68,10 @@ pub fn start() {
     if PORT.get().is_some() {
         return;
     }
+    // Fail closed: without strong randomness, rely on the asset protocol.
+    let Ok(capability) = crate::pi_runtime::capability_token() else {
+        return;
+    };
     let listener = match TcpListener::bind("127.0.0.1:0") {
         Ok(l) => l,
         Err(_) => return,
@@ -62,6 +80,7 @@ pub fn start() {
         Ok(a) => a.port(),
         Err(_) => return,
     };
+    let _ = CAPABILITY.set(capability);
     let _ = PORT.set(port);
     thread::spawn(move || {
         for stream in listener.incoming().flatten() {
@@ -105,6 +124,12 @@ fn handle(stream: TcpStream) -> std::io::Result<()> {
     }
 
     let (path, query) = target.split_once('?').unwrap_or((target.as_str(), ""));
+    let Some(capability) = CAPABILITY.get() else {
+        return write_simple(&mut writer, 404, "not found");
+    };
+    let Some(path) = authorized_route(path, capability) else {
+        return write_simple(&mut writer, 404, "not found");
+    };
     match path {
         "/health" => write_json(&mut writer, "{\"ok\":true}"),
         "/file" => serve_file(&mut writer, query, range.as_deref()),
@@ -580,4 +605,27 @@ pub fn media_info() -> serde_json::Value {
         "url": base_url(),
         "ffmpeg": has_ffmpeg(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::authorized_route;
+
+    #[test]
+    fn media_routes_require_the_launch_capability() {
+        let capability = "a".repeat(43);
+        assert_eq!(
+            authorized_route(&format!("/m/{capability}/file"), &capability),
+            Some("/file")
+        );
+        assert_eq!(authorized_route("/file", &capability), None);
+        assert_eq!(
+            authorized_route(&format!("/m/{}/file", "b".repeat(43)), &capability),
+            None
+        );
+        assert_eq!(
+            authorized_route(&format!("/m/{capability}"), &capability),
+            None
+        );
+    }
 }
