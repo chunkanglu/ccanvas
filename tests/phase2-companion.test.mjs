@@ -12,6 +12,12 @@ const result = await build({
     lib: { entry: `${root}scripts/pi-companion-extension.ts`, formats: ['es'] },
     rollupOptions: { external: ['node:net', 'node:os', 'node:path', 'node:url', '@earendil-works/pi-coding-agent'] },
   },
+  resolve: {
+    alias: {
+      typebox: `${root}tests/fixtures/pi-extension-stubs.mjs`,
+      '@earendil-works/pi-ai': `${root}tests/fixtures/pi-extension-stubs.mjs`,
+    },
+  },
 })
 const bundle = result[0].output.find(entry => entry.type === 'chunk' && entry.isEntry)
 const { default: companion } = await import(`data:text/javascript;base64,${Buffer.from(bundle.code).toString('base64')}`)
@@ -63,6 +69,7 @@ test('companion authenticates, replays events, scopes controls and preserves nat
   })
 
   const handlers = new Map()
+  const tools = []
   const prompts = []
   const names = []
   let pendingMessages = false
@@ -80,6 +87,7 @@ test('companion authenticates, replays events, scopes controls and preserves nat
   ]
   const pi = {
     on: (name, handler) => handlers.set(name, handler),
+    registerTool: tool => tools.push(tool),
     sendUserMessage: (text, options) => {
       prompts.push([text, options])
       pendingMessages = options?.deliverAs === 'followUp'
@@ -93,6 +101,7 @@ test('companion authenticates, replays events, scopes controls and preserves nat
   }
   companion(pi)
   assert.equal(handlers.size, 0, 'extension must be inert without manager capability env')
+  assert.equal(tools.length, 0, 'no tool is registered outside ccanvas')
 
   Object.assign(process.env, {
     CCANVAS_COMPANION_HOST: '127.0.0.1',
@@ -200,6 +209,28 @@ test('companion authenticates, replays events, scopes controls and preserves nat
   )
   assert.equal(failedSettled.event.outcome, 'failed')
   assert.equal(failedSettled.event.assistantText, 'provider failed')
+
+  // canvas_browser round-trips through the host; the host decides which
+  // browsers exist for this agent.
+  assert.deepEqual(tools.map(tool => tool.name), ['canvas_browser'])
+  const browserCall = tools[0].execute('call-1', { action: 'snapshot', browser: 'docs', ref: undefined })
+  const toolRequest = await waitFor(
+    () => records.find(frame => frame.type === 'tool_request'),
+    'browser tool request',
+  )
+  assert.equal(toolRequest.tool, 'browser')
+  assert.equal(toolRequest.action, 'snapshot')
+  assert.deepEqual(toolRequest.args, { browser: 'docs' })
+  peer.write(line({ ...runtime, type: 'tool_result', requestId: toolRequest.requestId, ok: true, result: 'page snapshot' }))
+  const browserResult = await browserCall
+  assert.equal(browserResult.content[0].text, 'page snapshot')
+  const failedCall = tools[0].execute('call-2', { action: 'click', ref: 'e1' })
+  const failedRequest = await waitFor(
+    () => records.filter(frame => frame.type === 'tool_request')[1],
+    'second browser tool request',
+  )
+  peer.write(line({ ...runtime, type: 'tool_result', requestId: failedRequest.requestId, ok: false, error: 'No browser is connected' }))
+  await assert.rejects(failedCall, /No browser is connected/)
 
   const prompt = { ...runtime, type: 'control', requestId: 'prompt-1', control: { type: 'prompt', text: 'safe synthetic prompt', deliverAs: 'followUp' } }
   peer.write(line(prompt) + line(prompt))

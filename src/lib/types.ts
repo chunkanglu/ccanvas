@@ -222,6 +222,8 @@ export type WidgetElement = Base & {
    * memory source for existing widgets; new graphs use an explicit folder.
    */
   graphSource?: 'claude-memory' | 'markdown'
+  /** Web widgets: name agents use to address this browser via `canvas_browser`. */
+  browserName?: string
 }
 
 export type CanvasElement =

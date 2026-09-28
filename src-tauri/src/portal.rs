@@ -60,6 +60,9 @@ pub struct PortalBounds {
     height: f64,
     visible: bool,
     zoom: f64,
+    /// The main page's CSS viewport (window.innerWidth/innerHeight).
+    viewport_width: Option<f64>,
+    viewport_height: Option<f64>,
 }
 
 fn valid_id(id: &str) -> bool {
@@ -128,6 +131,34 @@ fn clamp_zoom(zoom: f64) -> f64 {
     } else {
         1.0
     }
+}
+
+/// Offset of ccanvas's page viewport inside the window's content view.
+///
+/// DOM coordinates are relative to the main page viewport, but child webviews
+/// are positioned in content-view coordinates. On macOS Tauri uses a full-size
+/// content view that extends under the title bar, and WebKit starts the page
+/// below it, so without this offset every portal sits one title-bar height too
+/// high. The page viewport always ends at the window's bottom/right edge, so
+/// the size difference is exactly the top/left inset whatever mechanism
+/// produces it. Fullscreen and other platforms measure zero.
+fn viewport_offset(content: (f64, f64), viewport: (f64, f64)) -> (f64, f64) {
+    let inset = |outer: f64, inner: f64| {
+        let difference = outer - inner;
+        if difference.is_finite() && (0.0..=200.0).contains(&difference) {
+            difference
+        } else {
+            0.0
+        }
+    };
+    (inset(content.0, viewport.0), inset(content.1, viewport.1))
+}
+
+fn content_size<R: Runtime>(app: &AppHandle<R>) -> Option<(f64, f64)> {
+    let window = app.get_window(MAIN_WINDOW)?;
+    let scale = window.scale_factor().ok()?;
+    let size = window.inner_size().ok()?.to_logical::<f64>(scale);
+    Some((size.width, size.height))
 }
 
 fn label_for(manager: &PortalManager, id: &str) -> Option<String> {
@@ -291,9 +322,21 @@ pub async fn portal_bounds(
     if zoom_changed {
         webview.set_zoom(zoom).map_err(|e| e.to_string())?;
     }
+    let (origin_x, origin_y) = match (
+        content_size(&app),
+        bounds.viewport_width,
+        bounds.viewport_height,
+    ) {
+        (Some(content), Some(width), Some(height)) => viewport_offset(content, (width, height)),
+        _ => (0.0, 0.0),
+    };
     webview
         .set_bounds(Rect {
-            position: LogicalPosition::new(bounds.x.round(), bounds.y.round()).into(),
+            position: LogicalPosition::new(
+                (origin_x + bounds.x).round(),
+                (origin_y + bounds.y).round(),
+            )
+            .into(),
             size: LogicalSize::new(bounds.width.round(), bounds.height.round()).into(),
         })
         .map_err(|e| e.to_string())?;
@@ -332,6 +375,39 @@ pub async fn portal_action(
         _ => return Err("Unknown portal action".into()),
     }
     .map_err(|e| e.to_string())
+}
+
+const MAX_EVAL_RESULT_BYTES: usize = 192 * 1024;
+const EVAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Run synchronous automation JavaScript in a portal and return its JSON result.
+/// Only the canvas UI can call this (portal pages have no IPC); the frontend
+/// restricts it to browsers an agent is connected to by an arrow.
+#[tauri::command]
+pub async fn portal_eval(
+    app: AppHandle,
+    state: State<'_, PortalManager>,
+    id: String,
+    script: String,
+) -> Result<String, String> {
+    if script.len() > 512 * 1024 {
+        return Err("Portal script is too large".into());
+    }
+    let webview = webview_for(&app, &state, &id)?;
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    webview
+        .eval_with_callback(script, move |result| {
+            let _ = tx.send(result);
+        })
+        .map_err(|e| e.to_string())?;
+    let result = tauri::async_runtime::spawn_blocking(move || rx.recv_timeout(EVAL_TIMEOUT))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|_| "Portal script timed out".to_string())?;
+    if result.len() > MAX_EVAL_RESULT_BYTES {
+        return Err("Portal script result exceeds 192 KiB".into());
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -375,6 +451,29 @@ mod tests {
         assert!(!ok("http://localhost:5174/#x"));
         assert!(!ok("https://example.com/\nbad"));
         assert!(ok("http://127.0.0.1:5175/"));
+    }
+
+    #[test]
+    fn viewport_offset_is_the_measured_top_inset() {
+        // macOS: 820pt content view, 792pt page viewport under a 28pt title bar.
+        assert_eq!(
+            viewport_offset((1280.0, 820.0), (1280.0, 792.0)),
+            (0.0, 28.0)
+        );
+        // Fullscreen/other platforms: the page fills the content view.
+        assert_eq!(
+            viewport_offset((1280.0, 820.0), (1280.0, 820.0)),
+            (0.0, 0.0)
+        );
+        // Nonsense measurements never move a portal off-window.
+        assert_eq!(
+            viewport_offset((1280.0, 820.0), (1300.0, f64::NAN)),
+            (0.0, 0.0)
+        );
+        assert_eq!(
+            viewport_offset((1280.0, 820.0), (1280.0, 100.0)),
+            (0.0, 0.0)
+        );
     }
 
     #[test]

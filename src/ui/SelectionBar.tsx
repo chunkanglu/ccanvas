@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useStore, selectActive } from '../store/workspace'
 import { agentRuntimeId, deliverPrompt, sendPrompt, isLive } from '../lib/agents'
+import { browserNameOf } from '../lib/browser-agent'
 import type { ArrowElement, ArrowFlow, CanvasElement, FlowCondition, WidgetElement } from '../lib/types'
 import {
   IconCopy,
@@ -63,6 +64,13 @@ export function SelectionBar() {
   const arrowTo =
     loneArrow?.to && ws.elements.find((e) => e.id === loneArrow.to!.id)
   const isFlowEdge = !!loneArrow && isAgentEl(arrowFrom) && isAgentEl(arrowTo)
+  const isWebEl = (e?: CanvasElement) => !!e && e.type === 'widget' && e.kind === 'web' && !e.path
+  const browserAgent = isAgentEl(arrowFrom) && isWebEl(arrowTo)
+    ? arrowFrom as WidgetElement
+    : isAgentEl(arrowTo) && isWebEl(arrowFrom) ? arrowTo as WidgetElement : undefined
+  const browserTarget = browserAgent
+    ? (browserAgent === arrowFrom ? arrowTo : arrowFrom) as WidgetElement
+    : undefined
   const flow = loneArrow?.flow
   const fromTitle = (arrowFrom && 'title' in arrowFrom && arrowFrom.title) || 'source'
   const toTitle = (arrowTo && 'title' in arrowTo && arrowTo.title) || 'target'
@@ -211,6 +219,14 @@ export function SelectionBar() {
           >
             dashed
           </button>
+        </div>
+      )}
+
+      {browserAgent && browserTarget && (
+        <div className="selbar__row selbar__flow-hint">
+          {browserAgent.harness === 'pi'
+            ? <>{browserAgent.title} can drive browser <code>{browserNameOf(browserTarget)}</code> with <code>canvas_browser</code></>
+            : <>Only Pi agents can drive browsers; {browserAgent.title} is a Claude agent</>}
         </div>
       )}
 

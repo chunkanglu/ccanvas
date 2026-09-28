@@ -11,6 +11,7 @@ import {
   type PortalPlacement,
   type PortalState,
 } from '../lib/portal'
+import { registerPortal } from '../lib/browser-agent'
 
 const OCCLUSION_INTERVAL_MS = 120
 
@@ -23,8 +24,10 @@ export type NativePortalHandle = { action: (action: 'back' | 'forward' | 'reload
 
 export const NativePortal = forwardRef<NativePortalHandle, {
   url: string
+  workspaceId: string
+  widgetId: string
   onState: (state: PortalState) => void
-}>(function NativePortal({ url, onState }, ref) {
+}>(function NativePortal({ url, workspaceId, widgetId, onState }, ref) {
   const holeRef = useRef<HTMLDivElement>(null)
   // One native view per mounted widget instance (duplicate canvases differ).
   const idRef = useRef(`portal:${crypto.randomUUID()}`)
@@ -52,11 +55,18 @@ export const NativePortal = forwardRef<NativePortalHandle, {
       if (alive) unlisten = off
       else off()
     })
+    let unregister: (() => void) | undefined
     openPortal(id, url)
-      .then(() => { if (alive) setReady(true) })
+      .then(() => {
+        if (!alive) return
+        // Agents address portals through the canvas widget, never the view id.
+        unregister = registerPortal(workspaceId, widgetId, id)
+        setReady(true)
+      })
       .catch(reason => { if (alive) setError(reason instanceof Error ? reason.message : String(reason)) })
     return () => {
       alive = false
+      unregister?.()
       unlisten?.()
       void closePortal(id).catch(() => {})
     }
@@ -78,6 +88,7 @@ export const NativePortal = forwardRef<NativePortalHandle, {
     let frame = 0
     let last: PortalPlacement | null = null
     let lastRect = ''
+    let lastViewport = ''
     let lastSample = 0
     const tick = (now: number) => {
       frame = requestAnimationFrame(tick)
@@ -85,7 +96,14 @@ export const NativePortal = forwardRef<NativePortalHandle, {
       if (!hole) return
       const box = hole.getBoundingClientRect()
       const key = `${box.x},${box.y},${box.width},${box.height}`
-      if (key === lastRect && now - lastSample < OCCLUSION_INTERVAL_MS) return
+      // Entering/leaving fullscreen changes the title-bar inset the native
+      // side adds, even when the hole itself does not move.
+      const viewport = `${window.innerWidth}x${window.innerHeight}`
+      if (viewport !== lastViewport) {
+        lastViewport = viewport
+        last = null
+      }
+      if (key === lastRect && last && now - lastSample < OCCLUSION_INTERVAL_MS) return
       lastRect = key
       lastSample = now
       const next = portalPlacement(

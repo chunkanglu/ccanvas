@@ -891,6 +891,9 @@ enum HostFrameKind {
     Event(u64),
     Result,
     Pong,
+    /// Companion tool call needing canvas state (e.g. connected browsers).
+    /// Relayed to the attached webview; never retained for replay.
+    ToolRequest,
 }
 
 fn decode_host_frame(
@@ -922,6 +925,22 @@ fn decode_host_frame(
                 return Err("Invalid companion result".into());
             }
             HostFrameKind::Result
+        }
+        Some("tool_request") => {
+            if !frame
+                .get("requestId")
+                .and_then(Value::as_str)
+                .is_some_and(|value| valid_identifier(value, 256))
+                || frame.get("tool").and_then(Value::as_str) != Some("browser")
+                || !frame
+                    .get("action")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| valid_identifier(value, 64))
+                || !frame.get("args").is_some_and(Value::is_object)
+            {
+                return Err("Invalid companion tool request".into());
+            }
+            HostFrameKind::ToolRequest
         }
         Some("pong") => {
             if !frame
@@ -1063,7 +1082,7 @@ fn process_frame(
             }
             Ok(())
         }
-        HostFrameKind::Result | HostFrameKind::Pong => {
+        HostFrameKind::Result | HostFrameKind::Pong | HostFrameKind::ToolRequest => {
             let _ = app.emit(
                 "pi:companion",
                 CompanionData {
@@ -1752,6 +1771,67 @@ pub fn pi_control(
     writer.flush().map_err(|e| e.to_string())
 }
 
+/// Answer a companion `tool_request` from the attached webview.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)] // mirrors the IPC payload fields
+pub fn pi_tool_result(
+    state: State<'_, PiRuntimeManager>,
+    id: String,
+    generation: u64,
+    attachment_id: String,
+    request_id: String,
+    ok: bool,
+    result: Option<String>,
+    error: Option<String>,
+) -> Result<(), String> {
+    if !valid_identifier(&request_id, 256) {
+        return Err("Invalid Pi tool request id".into());
+    }
+    let (widget_id, companion) = {
+        let inner = state
+            .inner
+            .lock()
+            .map_err(|_| "Pi runtime state poisoned")?;
+        let session = inner
+            .sessions
+            .get(&id)
+            .filter(|session| {
+                session.generation == generation && session.attachment_id == attachment_id
+            })
+            .ok_or("Managed Pi runtime is not active")?;
+        (session.widget_id.clone(), session.companion.clone())
+    };
+    let mut frame = json!({
+        "v": PROTOCOL_VERSION,
+        "type": "tool_result",
+        "widgetId": widget_id,
+        "generation": generation,
+        "requestId": request_id,
+        "ok": ok,
+    });
+    if let Some(result) = result {
+        frame["result"] = Value::String(result);
+    }
+    if let Some(error) = error {
+        frame["error"] = Value::String(error);
+    }
+    let mut encoded = serde_json::to_vec(&frame).map_err(|e| e.to_string())?;
+    encoded.push(b'\n');
+    if encoded.len() > MAX_FRAME_BYTES {
+        return Err("Pi tool result exceeds frame bound".into());
+    }
+    let mut companion = companion.lock().map_err(|_| "Companion state poisoned")?;
+    if !companion.authenticated {
+        return Err("Managed Pi companion is not connected".into());
+    }
+    let writer = companion
+        .writer
+        .as_mut()
+        .ok_or("Managed Pi companion is not writable")?;
+    writer.write_all(&encoded).map_err(|e| e.to_string())?;
+    writer.flush().map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn pi_kill(
     state: State<'_, PiRuntimeManager>,
@@ -1957,6 +2037,20 @@ mod tests {
         let mut bad_queue = queue;
         bad_queue["event"]["pending"] = Value::String("yes".into());
         assert!(decode_host_frame(&serde_json::to_vec(&bad_queue).unwrap(), "widget", 2).is_err());
+
+        let tool_request = json!({
+            "v": 1, "type": "tool_request", "widgetId": "widget", "generation": 2,
+            "requestId": "r1", "tool": "browser", "action": "snapshot", "args": { "browser": "docs" },
+        });
+        assert!(matches!(
+            decode_host_frame(&serde_json::to_vec(&tool_request).unwrap(), "widget", 2),
+            Ok((_, HostFrameKind::ToolRequest))
+        ));
+        let mut shell_request = tool_request;
+        shell_request["tool"] = Value::String("shell".into());
+        assert!(
+            decode_host_frame(&serde_json::to_vec(&shell_request).unwrap(), "widget", 2).is_err()
+        );
 
         let tool = json!({
             "v": 1, "type": "event", "widgetId": "widget", "generation": 2, "seq": 3,

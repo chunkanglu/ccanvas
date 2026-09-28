@@ -15,6 +15,14 @@ import {
 } from '../lib/backend'
 import { NativePortal, type NativePortalHandle } from './NativePortal'
 import type { PortalState } from '../lib/portal'
+import {
+  agentsDriving,
+  BROWSER_ACTIVITY_EVENT,
+  BROWSER_NAME_RE,
+  browserNameOf,
+  normalizeBrowserName,
+  uniqueBrowserName,
+} from '../lib/browser-agent'
 import { IconReload, IconWeb, IconFile } from '../ui/icons'
 
 // Web preview widget. Two modes, stored on the same widget:
@@ -45,8 +53,39 @@ function looksLikeLocalFile(v: string): boolean {
   return isAbsolutePath(v) || /\.html?($|[?#])/i.test(v)
 }
 
-export function WebBody({ el, active }: { el: WidgetElement; active: boolean }) {
+export function WebBody({ el, active, workspaceId }: { el: WidgetElement; active: boolean; workspaceId: string }) {
   const mutateElement = useStore((s) => s.mutateElement)
+  const workspace = useStore((s) => s.tabs.find((tab) => tab.id === workspaceId))
+  const drivers = workspace ? agentsDriving(workspace, el.id) : []
+  const browserName = browserNameOf(el)
+  const [nameDraft, setNameDraft] = useState(browserName)
+  const [acting, setActing] = useState(false)
+  useEffect(() => setNameDraft(browserName), [browserName])
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const onActivity = (event: Event) => {
+      const detail = (event as CustomEvent<{ workspaceId?: string; widgetId?: string }>).detail
+      if (detail?.workspaceId !== workspaceId || detail.widgetId !== el.id) return
+      setActing(true)
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => setActing(false), 1500)
+    }
+    window.addEventListener(BROWSER_ACTIVITY_EVENT, onActivity)
+    return () => {
+      window.removeEventListener(BROWSER_ACTIVITY_EVENT, onActivity)
+      if (timer) clearTimeout(timer)
+    }
+  }, [el.id, workspaceId])
+  const commitName = () => {
+    const wanted = normalizeBrowserName(nameDraft)
+    if (!wanted || !BROWSER_NAME_RE.test(wanted)) {
+      setNameDraft(browserName)
+      return
+    }
+    const unique = uniqueBrowserName(workspace?.elements ?? [], wanted, el.id)
+    setNameDraft(unique)
+    if (unique !== el.browserName) mutateElement(el.id, (w) => { (w as WidgetElement).browserName = unique })
+  }
   const [input, setInput] = useState(el.url ?? el.path ?? '')
   const [src, setSrc] = useState(el.url ?? '')
   const [proxied, setProxied] = useState(false)
@@ -173,6 +212,31 @@ export function WebBody({ el, active }: { el: WidgetElement; active: boolean }) 
             </button>
           </>
         )}
+        {nativePortal && (
+          <input
+            className={`web__name${acting ? ' web__name--acting' : ''}`}
+            value={nameDraft}
+            title={drivers.length
+              ? `Browser name for canvas_browser. Drivable by: ${drivers.map((agent) => agent.title).join(', ')}`
+              : 'Browser name. Draw an arrow to a Pi agent so it can drive this browser with canvas_browser.'}
+            spellCheck={false}
+            onChange={(e) => setNameDraft(e.target.value)}
+            onBlur={commitName}
+            onKeyDown={(e) => {
+              e.stopPropagation()
+              if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+            }}
+            onPointerDown={(e) => e.stopPropagation()}
+          />
+        )}
+        {nativePortal && drivers.length > 0 && (
+          <span
+            className={`web__driver${acting ? ' web__driver--acting' : ''}`}
+            title={`Pi agents that can drive this browser: ${drivers.map((agent) => agent.title).join(', ')}`}
+          >
+            {acting ? 'agent acting' : `⇠ ${drivers.length === 1 ? drivers[0].title : `${drivers.length} agents`}`}
+          </span>
+        )}
         <button className="web__nav" title="Reload" onClick={reload}>
           <IconReload />
         </button>
@@ -245,7 +309,13 @@ export function WebBody({ el, active }: { el: WidgetElement; active: boolean }) 
           </div>
         )
       ) : nativePortal && src ? (
-        <NativePortal ref={portalRef} url={src} onState={onPortalState} />
+        <NativePortal
+          ref={portalRef}
+          url={src}
+          workspaceId={workspaceId}
+          widgetId={el.id}
+          onState={onPortalState}
+        />
       ) : effectiveSrc ? (
         <iframe
           ref={frameRef}

@@ -128,6 +128,13 @@ test('malformed, oversized and capability-leaking frames fail closed', () => {
   }
   assert.equal(decode({ ...runtime, type: 'event', seq: 11, event: stats }).event.costUsd, 0.25)
   assert.throws(() => decode({ ...runtime, type: 'event', seq: 12, event: { ...stats, costUsd: -1 } }), /stats/)
+  const toolRequest = { ...runtime, type: 'tool_request', requestId: 'r1', tool: 'browser', action: 'snapshot', args: { browser: 'docs' } }
+  assert.equal(protocol.decodeHostInboundFrame(JSON.stringify(toolRequest)).type, 'tool_request')
+  assert.throws(() => protocol.decodeCompanionInboundFrame(JSON.stringify(toolRequest)), /not valid/)
+  assert.throws(() => decode({ ...toolRequest, tool: 'shell' }), /tool request/)
+  const toolResult = { ...runtime, type: 'tool_result', requestId: 'r1', ok: true, result: 'snapshot text' }
+  assert.equal(protocol.decodeCompanionInboundFrame(JSON.stringify(toolResult)).type, 'tool_result')
+  assert.throws(() => protocol.decodeHostInboundFrame(JSON.stringify(toolResult)), /not valid/)
   assert.throws(() => decode({ ...runtime, type: 'event', seq: 13, event: { ...stats, context: { tokens: 1, window: 0, percent: 1 } } }), /stats context/)
   assert.throws(() => decode({ ...runtime, type: 'event', seq: 6, event: { type: 'lifecycle', phase: 'agent_settled', runId: '', outcome: 'completed' } }), /run id/)
   assert.throws(() => decode({ ...runtime, type: 'event', seq: 7, event: { type: 'lifecycle', phase: 'agent_settled', runId: '1:1', assistantText: 'x'.repeat(65 * 1024) } }), /assistant text/)

@@ -3,13 +3,17 @@
  *
  * This extension is inert unless a ccanvas-owned runtime provides a complete
  * private loopback capability configuration. It never patches Pi UI, registers
- * tools/commands, changes trust, or replaces native extension dialogs.
+ * commands, changes trust, or replaces native extension dialogs. Under ccanvas
+ * it registers one tool, `canvas_browser`, whose actions the host restricts to
+ * web widgets the user connected to this agent with an arrow.
  */
 import { createConnection, type Socket } from 'node:net'
 import { homedir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent'
+import { StringEnum } from '@earendil-works/pi-ai'
+import { Type } from 'typebox'
 import {
   PI_COMPANION_MAX_REPLAY_BYTES,
   PI_COMPANION_MAX_REPLAY_EVENTS,
@@ -26,6 +30,11 @@ import {
 type Config = RuntimeIdentity & { host: '127.0.0.1'; port: number; token: string }
 type ReplayEntry = { seq: number; encoded: string; bytes: number }
 type ControlHandler = (control: CompanionControl) => Promise<void>
+type PendingToolRequest = {
+  resolve: (result: string) => void
+  reject: (error: Error) => void
+  timer: ReturnType<typeof setTimeout>
+}
 type ControlRecord = {
   fingerprint: string
   completion: Promise<string>
@@ -52,6 +61,8 @@ type ProcessRuntime = {
   currentRunId?: string
   currentAssistantText: string
   assistantTextTruncated: boolean
+  toolRequests: Map<string, PendingToolRequest>
+  nextToolRequest: number
   reconnectAttempt: number
   reconnectTimer?: ReturnType<typeof setTimeout>
   stopping: boolean
@@ -105,6 +116,8 @@ function state(): ProcessRuntime | null {
     nextRun: 0,
     currentAssistantText: '',
     assistantTextTruncated: false,
+    toolRequests: new Map(),
+    nextToolRequest: 0,
     reconnectAttempt: 0,
     stopping: false,
   })
@@ -280,6 +293,15 @@ function connect(runtime: ProcessRuntime): void {
         } else if (frame.type === 'ping') {
           if (!runtime.authenticated) throw new Error('Ping received before companion welcome')
           write(runtime, encodePiCompanionFrame({ ...frame, type: 'pong' }))
+        } else if (frame.type === 'tool_result') {
+          if (!runtime.authenticated) throw new Error('Tool result received before companion welcome')
+          const pending = runtime.toolRequests.get(frame.requestId)
+          if (pending) {
+            runtime.toolRequests.delete(frame.requestId)
+            clearTimeout(pending.timer)
+            if (frame.ok) pending.resolve(frame.result ?? '')
+            else pending.reject(new Error(frame.error ?? 'ccanvas browser action failed'))
+          }
         }
       }
     } catch (error) {
@@ -291,11 +313,106 @@ function connect(runtime: ProcessRuntime): void {
       runtime.socket = undefined
       runtime.decoder = undefined
       runtime.authenticated = false
+      rejectToolRequests(runtime, 'ccanvas disconnected before the browser action completed')
       scheduleReconnect(runtime)
     }
   })
   // Errors are reflected by close; native TUI operation remains independent.
   socket.on('error', () => {})
+}
+
+function rejectToolRequests(runtime: ProcessRuntime, message: string): void {
+  for (const [requestId, pending] of runtime.toolRequests) {
+    clearTimeout(pending.timer)
+    pending.reject(new Error(message))
+    runtime.toolRequests.delete(requestId)
+  }
+}
+
+const BROWSER_ACTIONS = [
+  'list', 'info', 'snapshot', 'click', 'fill', 'select', 'press', 'scroll',
+  'goto', 'back', 'forward', 'reload', 'wait', 'js',
+] as const
+const TOOL_TIMEOUT_MS = 60_000
+
+/**
+ * Ask ccanvas to perform a browser action. The host owns canvas state: it
+ * resolves which named web widgets this agent is connected to by arrows, so a
+ * Pi process can never address browsers the user did not wire to it.
+ */
+function requestBrowser(
+  runtime: ProcessRuntime,
+  action: string,
+  args: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<string> {
+  if (!runtime.authenticated || !runtime.socket || runtime.socket.destroyed) {
+    return Promise.reject(new Error('ccanvas is not attached; open this agent on the canvas and retry'))
+  }
+  const requestId = `${runtime.config.generation}-browser-${++runtime.nextToolRequest}`
+  const encoded = encodePiCompanionFrame({
+    v: 1,
+    type: 'tool_request',
+    widgetId: runtime.config.widgetId,
+    generation: runtime.config.generation,
+    requestId,
+    tool: 'browser',
+    action,
+    args,
+  })
+  return new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      runtime.toolRequests.delete(requestId)
+      reject(new Error('ccanvas browser action timed out'))
+    }, TOOL_TIMEOUT_MS)
+    runtime.toolRequests.set(requestId, { resolve, reject, timer })
+    signal?.addEventListener('abort', () => {
+      const pending = runtime.toolRequests.get(requestId)
+      if (!pending) return
+      runtime.toolRequests.delete(requestId)
+      clearTimeout(pending.timer)
+      reject(new Error('Browser action aborted'))
+    }, { once: true })
+    write(runtime, encoded)
+  })
+}
+
+function registerBrowserTool(pi: ExtensionAPI, runtime: ProcessRuntime): void {
+  pi.registerTool({
+    name: 'canvas_browser',
+    label: 'Canvas browser',
+    description:
+      'Operate native web browsers on the ccanvas canvas that the user connected to this agent with an arrow. '
+      + 'Browsers are addressed by name and run in the user\'s real logged-in WebKit session. '
+      + 'Actions: list (connected browsers), info, snapshot (page text and interactive elements with refs such as e12), '
+      + 'click/fill/select (by ref), press (key, optional ref), scroll (direction, amount), goto (url), back, forward, reload, '
+      + 'wait (for load or text), js (evaluate a synchronous expression and return JSON).',
+    promptSnippet: 'Operate logged-in browsers on the ccanvas canvas that are connected to this agent by an arrow',
+    promptGuidelines: [
+      'Use canvas_browser when the user asks you to use a browser or web widget on the ccanvas canvas; start with canvas_browser action "list" to see connected browser names.',
+      'With canvas_browser, run action "snapshot" before acting, act by element ref (for example "e12"), and snapshot again after navigation or clicks because refs change.',
+      'canvas_browser runs in the user\'s logged-in session: stop and ask before entering passwords, paying, purchasing, sending messages, or other irreversible changes.',
+    ],
+    parameters: Type.Object({
+      action: StringEnum(BROWSER_ACTIONS),
+      browser: Type.Optional(Type.String({ description: 'Browser name from action "list"; optional when exactly one browser is connected' })),
+      ref: Type.Optional(Type.String({ description: 'Element ref from the latest snapshot, e.g. "e12"' })),
+      text: Type.Optional(Type.String({ description: 'Text for fill, or text to wait for' })),
+      value: Type.Optional(Type.String({ description: 'Option value or label for select' })),
+      key: Type.Optional(Type.String({ description: 'Key for press, e.g. "Enter", "Tab", "Escape", "ArrowDown"' })),
+      url: Type.Optional(Type.String({ description: 'URL for goto' })),
+      direction: Type.Optional(StringEnum(['up', 'down', 'top', 'bottom'] as const)),
+      amount: Type.Optional(Type.Number({ description: 'Scroll distance in viewport heights (default 0.8)' })),
+      script: Type.Optional(Type.String({ description: 'Synchronous JavaScript expression for js' })),
+      submit: Type.Optional(Type.Boolean({ description: 'For fill: submit the enclosing form afterwards' })),
+    }),
+    async execute(_toolCallId, params, signal) {
+      const { action, ...rest } = params as { action: string } & Record<string, unknown>
+      const args = Object.fromEntries(Object.entries(rest).filter(([, value]) => value !== undefined))
+      const text = await requestBrowser(runtime, action, args, signal)
+      return { content: [{ type: 'text', text }], details: { action, browser: args.browser } }
+    },
+  })
 }
 
 function retain(runtime: ProcessRuntime, entry: ReplayEntry): void {
@@ -528,6 +645,7 @@ export default function companion(pi: ExtensionAPI): void {
   const runtime = state()
   if (!runtime) return
   const owner = ++runtime.owner
+  registerBrowserTool(pi, runtime)
   let ctx: ExtensionContext | undefined
   let settledOutcome: 'completed' | 'aborted' | 'failed' | 'unknown' = 'unknown'
   runtime.controlHandler = async frame => {

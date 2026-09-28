@@ -35,4 +35,4 @@ Portal content is arbitrary remote web content.
 - A portal partly scrolled off the canvas, or partly covered, hides entirely rather than clipping.
 - While a portal has focus, canvas keyboard shortcuts and wheel-zoom go to the page; click the canvas to return.
 - A native view cannot sit beneath other widgets or tooltips. Covering it hides it.
-- No per-portal isolated profiles, no data-clearing UI, and no agent automation of portals.
+- No per-portal isolated profiles or data-clearing UI. Pi agents can drive arrow-connected portals; see [agent browser control](agent-browser-control.md).

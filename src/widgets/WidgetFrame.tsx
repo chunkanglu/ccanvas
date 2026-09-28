@@ -433,7 +433,7 @@ export function WidgetFrame({
       >
         <WidgetErrorBoundary>
           {el.kind === 'note' && <NoteBody el={el} active={active} />}
-          {el.kind === 'web' && <WebBody el={el} active={active} />}
+          {el.kind === 'web' && <WebBody el={el} active={active} workspaceId={workspaceId} />}
           {el.kind === 'video' && <VideoBody el={el} active={active} />}
           {el.kind === 'mediainfo' && <MediaInfoBody el={el} />}
           {el.kind === 'claude' && <KnowledgeGraphBody el={el} />}
