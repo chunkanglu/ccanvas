@@ -6,7 +6,7 @@ Implemented on `fork/agent-canvas-control`; installed-app acceptance pending.
 
 ## What it does
 
-Pi agents get a `canvas` tool for building their own workspace next to themselves. Every panel they create is placed beside them, marked `↳ <agent>`, and automatically connected to them with an arrow. A spawned browser is therefore immediately drivable with `canvas_browser`.
+Pi agents get a `ccanvas` tool for building their own workspace next to themselves. It is not named `canvas`, because users may already have an unrelated `canvas` tool. Every panel they create is placed beside them, marked `↳ <agent>`, and automatically connected to them with an arrow. A spawned browser is therefore immediately drivable with `canvas_browser`.
 
 | Action | Effect |
 | --- | --- |
@@ -30,6 +30,15 @@ Pi agents get a `canvas` tool for building their own workspace next to themselve
 - **Launch prompts** are one-shot runtime state, never saved into `.ccnvs`. After a restart the task remains an unsent draft, and opened canvases still require activation.
 - **Flows:** `return_output` and flow arrows respect the global pause. Results return automatically only after you resume flows.
 - Only Pi agents have the tool.
+- **Always active in ccanvas agents:** `canvas_browser` and `ccanvas` are re-activated before each agent run, even when a tool-profile extension reset the active set. Otherwise the agent would re-enable them *during* a run. Pi records that as `addedToolNames`, and after a later switch to Anthropic every request can fail with `Tool reference 'canvas_browser' not found in available tools`. Sessions whose history already contains such a record are left as they are; see recovery below.
+
+## Recovering an affected session
+
+A session that hit `Tool reference '…' not found in available tools` keeps the problematic record in its history, so it fails on every Anthropic request. Use one of these:
+
+- Use `/tree` to branch from a message *before* the agent enabled the tool.
+- Deactivate the tool in that session, for example `tool_profile remove canvas_browser`, so Pi stops referencing it.
+- Continue on the provider that was active when the tool was enabled (the recorded case worked on `openai-codex`).
 
 ## Limits
 

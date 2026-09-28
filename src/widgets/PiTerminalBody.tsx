@@ -94,7 +94,7 @@ export function PiTerminalBody({ workspaceId, el, active, visible = true }: Prop
   useEffect(() => {
     if (!armed || !hostRef.current || !innerRef.current) return
     let disposed = false
-    // An agent spawned by the `canvas` tool starts on its task exactly once,
+    // An agent spawned by the `ccanvas` tool starts on its task exactly once,
     // after both the runtime handle and an authenticated companion exist.
     let launchPrompt = takeLaunchPrompt(workspaceId, el.id)
     let companionReady = false

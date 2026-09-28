@@ -5,7 +5,7 @@ import { agentRuntimeId, deliverPrompt, useAgents } from './agents'
 import { browserNameOf, uniqueBrowserName } from './browser-agent'
 import { widgetKindForFile } from './filetypes'
 
-// Host side of the `canvas` Pi tool: agents create panels next to themselves,
+// Host side of the `ccanvas` Pi tool: agents create panels next to themselves,
 // wired to them with arrows. The rule that makes this safe: an agent may only
 // connect, message or close itself and elements it spawned. It can never draw
 // an arrow into a panel the user created (which would, for example, grant it

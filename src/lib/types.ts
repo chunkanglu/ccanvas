@@ -55,7 +55,7 @@ type Base = {
   /** elements spawned by the agent-tracking camera carry the tracked agent's id,
    *  so "stop & clear" can remove the orbit (satellite widgets + their arrows) */
   trackOf?: string
-  /** Provenance: the agent widget that created this element via the `canvas` tool. */
+  /** Provenance: the agent widget that created this element via the `ccanvas` tool. */
   spawnedBy?: string
 }
 

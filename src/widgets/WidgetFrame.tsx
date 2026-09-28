@@ -375,7 +375,7 @@ export function WidgetFrame({
           </span>
         )}
         {spawnerTitle && (
-          <span className="widget__spawned" title={`Created by agent "${spawnerTitle}" with the canvas tool`}>
+          <span className="widget__spawned" title={`Created by agent "${spawnerTitle}" with the ccanvas tool`}>
             ↳ {spawnerTitle}
           </span>
         )}

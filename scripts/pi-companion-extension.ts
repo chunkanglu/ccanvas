@@ -423,8 +423,9 @@ const CANVAS_ACTIONS = [
 
 function registerCanvasTool(pi: ExtensionAPI, runtime: ProcessRuntime): void {
   pi.registerTool({
-    name: 'canvas',
-    label: 'Canvas',
+    // `ccanvas`, not `canvas`: users may already have an unrelated `canvas` tool.
+    name: 'ccanvas',
+    label: 'ccanvas',
     description:
       'Create and wire panels on the ccanvas canvas next to this agent. New panels are automatically connected to this agent with an arrow. '
       + 'Actions: list (this agent, what it spawned, what is connected), spawn_agent (a Pi agent; optional prompt starts it working), '
@@ -433,9 +434,9 @@ function registerCanvasTool(pi: ExtensionAPI, runtime: ProcessRuntime): void {
       + 'message (send a prompt to a spawned or connected agent), status (agent activity and last output line), close (remove an element this agent spawned).',
     promptSnippet: 'Spawn and connect agents, browsers, notes, files and terminals on the ccanvas canvas',
     promptGuidelines: [
-      'Use canvas only when the user asks for new canvas panels or delegation to other agents; each spawned agent is a separate Pi session with its own model usage.',
-      'After canvas spawn_agent, results do not return automatically unless flows are resumed and return_output was set; use canvas status or message to coordinate.',
-      'Use canvas_browser (not canvas) to operate a browser after creating it with canvas spawn_browser.',
+      'Use ccanvas only when the user asks for new canvas panels or delegation to other agents; each spawned agent is a separate Pi session with its own model usage.',
+      'After ccanvas spawn_agent, results do not return automatically unless flows are resumed and return_output was set; use ccanvas status or message to coordinate.',
+      'Use canvas_browser (not ccanvas) to operate a browser after creating it with ccanvas spawn_browser.',
     ],
     parameters: Type.Object({
       action: StringEnum(CANVAS_ACTIONS),
@@ -463,6 +464,37 @@ function registerCanvasTool(pi: ExtensionAPI, runtime: ProcessRuntime): void {
       return { content: [{ type: 'text', text }], details: { action } }
     },
   })
+}
+
+const CANVAS_TOOL_NAMES = ['canvas_browser', 'ccanvas'] as const
+
+/**
+ * Keep the ccanvas tools active in ccanvas-managed sessions.
+ *
+ * Tool-profile extensions may reset the active set at session start, leaving
+ * the agent to re-enable these tools *during* a run. Pi records a tool enabled
+ * by another tool's execution as `addedToolNames`, and Anthropic requests then
+ * carry a `tool_reference` that some sessions reject ("Tool reference ... not
+ * found in available tools"). Activating between runs records nothing.
+ *
+ * Sessions whose history already recorded such an addition are left alone so
+ * that removing the tool remains a working recovery path.
+ */
+export function ensureCanvasTools(pi: Pick<ExtensionAPI, 'getActiveTools' | 'getAllTools' | 'setActiveTools'>, ctx: ExtensionContext): void {
+  const manager = ctx.sessionManager as { getBranch?: () => unknown[] }
+  const branch = typeof manager.getBranch === 'function' ? manager.getBranch() : []
+  const affected = branch.some(raw => {
+    const message = (raw as { type?: string; message?: { role?: string; addedToolNames?: unknown } })
+    return message.type === 'message'
+      && message.message?.role === 'toolResult'
+      && Array.isArray(message.message.addedToolNames)
+      && message.message.addedToolNames.some(name => (CANVAS_TOOL_NAMES as readonly string[]).includes(String(name)))
+  })
+  if (affected) return
+  const registered = new Set(pi.getAllTools().map(tool => tool.name))
+  const active = pi.getActiveTools()
+  const missing = CANVAS_TOOL_NAMES.filter(name => registered.has(name) && !active.includes(name))
+  if (missing.length) pi.setActiveTools([...active, ...missing])
 }
 
 function retain(runtime: ProcessRuntime, entry: ReplayEntry): void {
@@ -787,6 +819,7 @@ export default function companion(pi: ExtensionAPI): void {
   })
   pi.on('before_agent_start', (_event, next) => {
     remember(next)
+    ensureCanvasTools(pi, next)
     settledOutcome = 'unknown'
     runtime.currentRunId = `${runtime.config.generation}:${++runtime.nextRun}`
     runtime.currentAssistantText = ''
