@@ -931,7 +931,10 @@ fn decode_host_frame(
                 .get("requestId")
                 .and_then(Value::as_str)
                 .is_some_and(|value| valid_identifier(value, 256))
-                || frame.get("tool").and_then(Value::as_str) != Some("browser")
+                || !matches!(
+                    frame.get("tool").and_then(Value::as_str),
+                    Some("browser" | "canvas")
+                )
                 || !frame
                     .get("action")
                     .and_then(Value::as_str)
@@ -2046,6 +2049,11 @@ mod tests {
             decode_host_frame(&serde_json::to_vec(&tool_request).unwrap(), "widget", 2),
             Ok((_, HostFrameKind::ToolRequest))
         ));
+        let mut canvas_request = tool_request.clone();
+        canvas_request["tool"] = Value::String("canvas".into());
+        assert!(
+            decode_host_frame(&serde_json::to_vec(&canvas_request).unwrap(), "widget", 2).is_ok()
+        );
         let mut shell_request = tool_request;
         shell_request["tool"] = Value::String("shell".into());
         assert!(

@@ -11,7 +11,7 @@
     "test:phase4": "node --test tests/phase4-flow-tracking.test.mjs",
     "test:phase5": "node --test tests/phase5-pi-first.test.mjs",
     "test:phase6": "node --test tests/phase6-hardening.test.mjs",
-    "test:portal": "node --test tests/portal.test.mjs tests/browser-agent.test.mjs",
+    "test:portal": "node --test tests/portal.test.mjs tests/browser-agent.test.mjs tests/canvas-agent.test.mjs",
     "test:app-install": "node --test tests/app-install.test.mjs",
     "probe:pi": "python3 scripts/probe-pi-rpc.py",
     "probe:pi:tui": "python3 scripts/probe-pi-tui.py",

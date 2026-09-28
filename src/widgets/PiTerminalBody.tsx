@@ -19,6 +19,7 @@ import { registerTransport, unregisterTransport, useAgents, ensureNotifyPermissi
 import { useStore, selectActive } from '../store/workspace'
 import { onAgentRunSettled } from '../lib/flow'
 import { executeBrowserRequest } from '../lib/browser-agent'
+import { executeCanvasRequest, takeLaunchPrompt } from '../lib/canvas-agent'
 import { PI_SETUP_GUIDANCE } from '../lib/pi-launch'
 import { onStructuredToolEvent } from '../lib/tracker'
 import {
@@ -93,6 +94,21 @@ export function PiTerminalBody({ workspaceId, el, active, visible = true }: Prop
   useEffect(() => {
     if (!armed || !hostRef.current || !innerRef.current) return
     let disposed = false
+    // An agent spawned by the `canvas` tool starts on its task exactly once,
+    // after both the runtime handle and an authenticated companion exist.
+    let launchPrompt = takeLaunchPrompt(workspaceId, el.id)
+    let companionReady = false
+    const maybeLaunch = () => {
+      const runtime = runtimeRef.current
+      if (!launchPrompt || !runtime || !companionReady || disposed) return
+      const text = launchPrompt
+      launchPrompt = undefined
+      runtime.control(managedPiPromptControl(text, false))
+        .then(() => { if (draftRef.current === text) persistDraft('') })
+        .catch(reason => {
+          notify(el.title || 'Pi agent', `spawned task not started: ${reason instanceof Error ? reason.message : String(reason)}`)
+        })
+    }
     let transportOwner: symbol | undefined
     const terminal = new Terminal({
       fontFamily: "'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace",
@@ -156,7 +172,7 @@ export function PiTerminalBody({ workspaceId, el, active, visible = true }: Prop
         },
         onEvent: (frame, delivery) => {
           if (frame.type === 'tool_request') {
-            void handleToolRequest(frame.requestId, frame.action, frame.args)
+            void handleToolRequest(frame.requestId, frame.tool, frame.action, frame.args)
             return
           }
           if (frame.type !== 'event') return
@@ -164,6 +180,8 @@ export function PiTerminalBody({ workspaceId, el, active, visible = true }: Prop
         },
         onStatus: status => {
           if (status.connected) {
+            companionReady = true
+            queueMicrotask(maybeLaunch)
             setConnection(status.error ? 'warning' : 'connected')
             setError(status.error)
             if (useAgents.getState().status[runtimeId] !== 'working') {
@@ -199,6 +217,7 @@ export function PiTerminalBody({ workspaceId, el, active, visible = true }: Prop
         })
         void ensureNotifyPermission()
         runtime.start()
+        maybeLaunch()
       }).catch(reason => {
         if (disposed) return
         const message = reason instanceof Error ? reason.message : String(reason)
@@ -214,12 +233,22 @@ export function PiTerminalBody({ workspaceId, el, active, visible = true }: Prop
 
     // canvas_browser: the agent may only reach web widgets joined to it by an
     // arrow in its own canvas tab. The companion never sees canvas state.
-    async function handleToolRequest(requestId: string, action: string, args: Record<string, unknown>) {
+    async function handleToolRequest(
+      requestId: string,
+      tool: 'browser' | 'canvas',
+      action: string,
+      args: Record<string, unknown>,
+    ) {
       const runtime = runtimeRef.current
       if (!runtime) return
       try {
         const workspace = useStore.getState().tabs.find(tab => tab.id === workspaceId)
         if (!workspace) throw new Error('This agent\'s canvas is not open')
+        if (tool === 'canvas') {
+          const result = await executeCanvasRequest({ workspaceId, agentId: el.id }, { action, args })
+          runtime.toolResult(requestId, { ok: true, result })
+          return
+        }
         const result = await executeBrowserRequest({
           workspace,
           agentId: el.id,

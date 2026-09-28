@@ -75,7 +75,7 @@ function makeWorkspace(name: string, dir?: string): Workspace {
 }
 
 // ---------- widget defaults ----------
-const WIDGET_SIZE: Record<WidgetKind, { w: number; h: number }> = {
+export const WIDGET_SIZE: Record<WidgetKind, { w: number; h: number }> = {
   terminal: { w: 520, h: 340 },
   agent: { w: 540, h: 380 },
   web: { w: 480, h: 360 },
@@ -241,6 +241,11 @@ export type Store = {
   /** Runtime callback variant that targets its owning tab even while hidden. */
   mutateElementInTab: (tabId: string, id: string, fn: (el: CanvasElement) => void) => void
   removeElements: (ids: string[]) => void
+  /** Agent-driven edits target the agent's own tab, never whichever is active. */
+  addElementsInTab: (tabId: string, els: CanvasElement[]) => void
+  removeElementsInTab: (tabId: string, ids: string[]) => void
+  /** Create a widget at a top-left position in a tab without changing focus. */
+  spawnWidgetInTab: (tabId: string, kind: WidgetKind, x: number, y: number, init?: Partial<WidgetElement>) => string | null
   /** spawn a widget centred at (x,y); returns the new element id */
   spawnWidget: (
     kind: WidgetKind,
@@ -683,6 +688,64 @@ export const useStore = create<Store>((set, get) => ({
         dirty: true,
       })),
     )
+  },
+
+  addElementsInTab: (tabId, els) =>
+    set((s) => ({
+      tabs: s.tabs.map((tab) => tab.id !== tabId ? tab : {
+        ...tab,
+        elements: [...tab.elements, ...els.map((el) => ({ ...el, z: nextZ() }) as CanvasElement)],
+        dirty: true,
+      }),
+    })),
+
+  removeElementsInTab: (tabId, ids) => {
+    const tab = get().tabs.find((candidate) => candidate.id === tabId)
+    if (!tab) return
+    const remove = new Set(ids)
+    for (const e of tab.elements) if (e.labelFor && remove.has(e.labelFor)) remove.add(e.id)
+    if (get().trackingAgentTabId === tabId && get().trackingAgentId && remove.has(get().trackingAgentId!)) {
+      get().stopTrackingAgent(false)
+    }
+    for (const e of tab.elements) {
+      if (!remove.has(e.id) || e.type !== 'widget' || (e.kind !== 'terminal' && e.kind !== 'agent')) continue
+      if (e.kind === 'agent' && e.harness === 'pi') killManagedPi(`${tabId}:${e.id}`)
+      else killPty(`${tabId}:${e.id}`)
+    }
+    set((s) => ({
+      tabs: s.tabs.map((candidate) => candidate.id !== tabId ? candidate : {
+        ...candidate,
+        // Arrows bound to removed widgets would otherwise dangle.
+        elements: candidate.elements.filter((e) =>
+          !remove.has(e.id)
+          && !(e.type === 'arrow' && ((e.from && remove.has(e.from.id)) || (e.to && remove.has(e.to.id))))),
+        dirty: true,
+      }),
+    }))
+  },
+
+  spawnWidgetInTab: (tabId, kind, x, y, init) => {
+    const tab = get().tabs.find((candidate) => candidate.id === tabId)
+    if (!tab) return null
+    const { w, h } = WIDGET_SIZE[kind]
+    const id = newId()
+    const el: CanvasElement = {
+      id,
+      type: 'widget',
+      kind,
+      x,
+      y,
+      w,
+      h,
+      z: 0,
+      title: WIDGET_TITLE[kind],
+      ...(kind === 'web' ? { url: '', browserName: uniqueBrowserName(tab.elements) } : {}),
+      ...(tab.dir ? { cwd: tab.dir } : {}),
+      ...(kind === 'agent' ? { harness: 'pi' as const } : {}),
+      ...init,
+    }
+    get().addElementsInTab(tabId, [el])
+    return id
   },
 
   spawnWidget: (kind, x, y, init) => {

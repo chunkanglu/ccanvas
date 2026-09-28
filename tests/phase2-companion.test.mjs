@@ -212,7 +212,7 @@ test('companion authenticates, replays events, scopes controls and preserves nat
 
   // canvas_browser round-trips through the host; the host decides which
   // browsers exist for this agent.
-  assert.deepEqual(tools.map(tool => tool.name), ['canvas_browser'])
+  assert.deepEqual(tools.map(tool => tool.name), ['canvas_browser', 'canvas'])
   const browserCall = tools[0].execute('call-1', { action: 'snapshot', browser: 'docs', ref: undefined })
   const toolRequest = await waitFor(
     () => records.find(frame => frame.type === 'tool_request'),
