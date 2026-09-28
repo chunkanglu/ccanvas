@@ -88,6 +88,7 @@ export const NativePortal = forwardRef<NativePortalHandle, {
     let frame = 0
     let last: PortalPlacement | null = null
     let lastRect = ''
+    let lastViewport = ''
     let lastSample = 0
     const tick = (now: number) => {
       frame = requestAnimationFrame(tick)
@@ -95,7 +96,14 @@ export const NativePortal = forwardRef<NativePortalHandle, {
       if (!hole) return
       const box = hole.getBoundingClientRect()
       const key = `${box.x},${box.y},${box.width},${box.height}`
-      if (key === lastRect && now - lastSample < OCCLUSION_INTERVAL_MS) return
+      // Entering/leaving fullscreen changes the title-bar inset the native
+      // side adds, even when the hole itself does not move.
+      const viewport = `${window.innerWidth}x${window.innerHeight}`
+      if (viewport !== lastViewport) {
+        lastViewport = viewport
+        last = null
+      }
+      if (key === lastRect && last && now - lastSample < OCCLUSION_INTERVAL_MS) return
       lastRect = key
       lastSample = now
       const next = portalPlacement(

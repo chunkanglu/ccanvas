@@ -55,8 +55,13 @@ export function samePlacement(a: PortalPlacement | null, b: PortalPlacement): bo
 }
 
 export const openPortal = (id: string, url: string) => invoke<void>('portal_open', { id, url })
+// The viewport lets the native side measure where this page sits inside the
+// window (below the macOS title bar); DOM coordinates are viewport-relative.
 export const placePortal = (id: string, bounds: PortalPlacement) =>
-  invoke<void>('portal_bounds', { id, bounds })
+  invoke<void>('portal_bounds', {
+    id,
+    bounds: { ...bounds, viewportWidth: window.innerWidth, viewportHeight: window.innerHeight },
+  })
 export const navigatePortal = (id: string, url: string) => invoke<void>('portal_navigate', { id, url })
 export const portalAction = (id: string, action: 'back' | 'forward' | 'reload' | 'focus') =>
   invoke<void>('portal_action', { id, action })
