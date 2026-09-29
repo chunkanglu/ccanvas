@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useStore, selectActive } from '../store/workspace'
-import { boundsOfMany, elementBounds, screenToWorld } from '../lib/geometry'
+import { boundsOfMany, elementBounds, screenToWorld, withResolvedArrows } from '../lib/geometry'
 import { WIDGET_ACCENT } from '../lib/types'
 
 // Overview map of the whole canvas with the current viewport outlined.
@@ -16,7 +16,8 @@ export function Minimap() {
   const setCamera = useStore((s) => s.setCamera)
   const [collapsed, setCollapsed] = useState(false)
 
-  const world = boundsOfMany(ws.elements)
+  const elements = withResolvedArrows(ws.elements)
+  const world = boundsOfMany(elements)
   if (!world || ws.elements.length === 0) return null
 
   // viewport rectangle in world coords
@@ -71,7 +72,7 @@ export function Minimap() {
         style={{ width: MAP_W, height: MAP_H }}
         onPointerDown={navigate}
       >
-        {ws.elements.map((el) => {
+        {elements.map((el) => {
           const b = elementBounds(el)
           const p = toMap(b.x, b.y)
           const color =

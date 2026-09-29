@@ -168,6 +168,15 @@ export function Canvas() {
   const cam = ws.camera
   const selSet = new Set(selection)
   const byId = new Map(ws.elements.map((e) => [e.id, e]))
+  // Arrows are drawn docked to their bound elements' *current* edges
+  // (resolvedArrow). Their stored x1..y2 go stale whenever a bound element
+  // moves, so anything that hit-tests, selects or outlines an arrow must use
+  // the same resolved geometry the renderer draws — otherwise the clickable
+  // line sits wherever the arrow was last stored, not where it is shown.
+  const live = (el: CanvasElement): CanvasElement =>
+    el.type === 'arrow' ? resolvedArrow(el, byId) : el
+  // thin connectors need a wider grab band than other ink
+  const pickTol = (el: CanvasElement): number => (el.type === 'arrow' ? 10 : 6) / cam.zoom
 
   const getPt = (e: { clientX: number; clientY: number }): Point => {
     const r = rootRef.current!.getBoundingClientRect()
@@ -229,7 +238,6 @@ export function Canvas() {
 
   // topmost vector under a world point (text/images/frames/widgets self-pick)
   const pickVector = (world: Point): CanvasElement | null => {
-    const tol = 6 / cam.zoom
     let best: CanvasElement | null = null
     for (const el of ws.elements) {
       if (
@@ -239,14 +247,13 @@ export function Canvas() {
         el.type === 'frame'
       )
         continue
-      if (hitTest(el, world, tol) && (!best || el.z > best.z)) best = el
+      if (hitTest(live(el), world, pickTol(el)) && (!best || el.z > best.z)) best = el
     }
     return best
   }
 
   // topmost element of ANY type under a world point — for the right-click menu
   const pickTopForMenu = (world: Point): CanvasElement | null => {
-    const tol = 6 / cam.zoom
     let best: CanvasElement | null = null
     for (const el of ws.elements) {
       const hit =
@@ -255,7 +262,7 @@ export function Canvas() {
         el.type === 'text' ||
         el.type === 'image'
           ? pointInRect(world, elementBounds(el))
-          : hitTest(el, world, tol)
+          : hitTest(live(el), world, pickTol(el))
       if (hit && (!best || el.z > best.z)) best = el
     }
     return best
@@ -433,7 +440,7 @@ export function Canvas() {
   const eraseAt = (world: Point) => {
     const tol = 8 / cam.zoom
     const hits = ws.elements
-      .filter((el) => el.type !== 'widget' && el.type !== 'frame' && hitTest(el, world, tol))
+      .filter((el) => el.type !== 'widget' && el.type !== 'frame' && hitTest(live(el), world, tol))
       .map((el) => el.id)
     if (!hits.length) return
     const d = dragRef.current
@@ -840,7 +847,7 @@ export function Canvas() {
       const tl = screenToWorld({ x: marquee.x, y: marquee.y }, cam)
       const worldBox: Rect = { x: tl.x, y: tl.y, w: marquee.w / cam.zoom, h: marquee.h / cam.zoom }
       const hits = ws.elements
-        .filter((el) => rectsIntersect(elementBounds(el), worldBox))
+        .filter((el) => rectsIntersect(elementBounds(live(el)), worldBox))
         .map((el) => el.id)
       const expanded = withGroupSiblings(ws.elements, hits)
       setSelection(e.shiftKey ? [...new Set([...selection, ...expanded])] : expanded)
@@ -929,7 +936,7 @@ export function Canvas() {
   }
   const selBoxes = ws.elements
     .filter((el) => selSet.has(el.id) && el.type !== 'widget')
-    .map((el) => ({ id: el.id, r: screenRectOf(elementBounds(el)) }))
+    .map((el) => ({ id: el.id, r: screenRectOf(elementBounds(live(el))) }))
 
   // a single selected resizable element gets corner transform handles
   const lone = selection.length === 1 ? byId.get(selection[0]) : undefined

@@ -14,7 +14,7 @@ import type {
   Prompt,
 } from '../lib/types'
 import { DEFAULT_CAMERA, PALETTE, WIDGET_ACCENT } from '../lib/types'
-import { boundsOfMany, clamp, elementBounds, translated } from '../lib/geometry'
+import { boundsOfMany, clamp, elementBounds, resolvedArrow, translated, withResolvedArrows } from '../lib/geometry'
 import { newId } from '../lib/id'
 import {
   loadSession,
@@ -573,7 +573,7 @@ export const useStore = create<Store>((set, get) => ({
   homeView: (vw, vh) => {
     const ws = get().active()
     if (!ws) return
-    const b = boundsOfMany(ws.elements)
+    const b = boundsOfMany(withResolvedArrows(ws.elements))
     let cam: Camera
     if (!b) {
       // empty canvas → put the world origin at the viewport centre
@@ -692,10 +692,17 @@ export const useStore = create<Store>((set, get) => ({
 
   addElementsInTab: (tabId, els) =>
     set((s) => ({
-      tabs: s.tabs.map((tab) => tab.id !== tabId ? tab : {
-        ...tab,
-        elements: [...tab.elements, ...els.map((el) => ({ ...el, z: nextZ() }) as CanvasElement)],
-        dirty: true,
+      tabs: s.tabs.map((tab) => {
+        if (tab.id !== tabId) return tab
+        // Programmatic connectors carry bindings but placeholder coordinates.
+        // Store their docked geometry so bounds (fit, minimap, export, hit
+        // tests on stale data) start from where the arrow is actually drawn.
+        const byId = new Map([...tab.elements, ...els].map((el) => [el.id, el]))
+        const added = els.map((el) => ({
+          ...(el.type === 'arrow' ? resolvedArrow(el, byId) : el),
+          z: nextZ(),
+        }) as CanvasElement)
+        return { ...tab, elements: [...tab.elements, ...added], dirty: true }
       }),
     })),
 
@@ -1353,8 +1360,9 @@ export const useStore = create<Store>((set, get) => ({
     const ws = get().active()
     if (!ws) return
     const ids = new Set(get().selection)
-    const sel = ws.elements.filter((e) => ids.has(e.id))
-    const b = boundsOfMany(sel.length ? sel : ws.elements)
+    const live = withResolvedArrows(ws.elements)
+    const sel = live.filter((e) => ids.has(e.id))
+    const b = boundsOfMany(sel.length ? sel : live)
     if (!b) return
     const pad = 80
     const zoom = clamp(Math.min(vw / (b.w + pad * 2), vh / (b.h + pad * 2)), 0.1, 2)
