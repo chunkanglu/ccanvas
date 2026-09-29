@@ -204,6 +204,9 @@ export function PiTerminalBody({ workspaceId, el, active, visible = true }: Prop
           return
         }
         runtimeRef.current = runtime
+        if (runtime.sessionReset) {
+          terminal.write('\x1b[2m· the previous Pi session was never saved (Pi saves after the first reply) — starting a new session\x1b[0m\r\n')
+        }
         transportOwner = registerTransport(runtimeId, {
           send: data => runtime.send(data),
           prompt: (text, requestId) => runtime.control(managedPiPromptControl(
