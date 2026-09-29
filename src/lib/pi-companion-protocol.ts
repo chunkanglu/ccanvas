@@ -128,7 +128,7 @@ export type CompanionToolRequest = RuntimeIdentity & {
   v: typeof PI_COMPANION_VERSION
   type: 'tool_request'
   requestId: string
-  tool: 'browser'
+  tool: 'browser' | 'canvas'
   action: string
   args: Record<string, unknown>
 }
@@ -362,7 +362,7 @@ export function decodePiCompanionFrame(line: string): PiCompanionFrame {
     case 'tool_request':
       if (
         !text(value.requestId, 256)
-        || value.tool !== 'browser'
+        || (value.tool !== 'browser' && value.tool !== 'canvas')
         || !text(value.action, 64)
         || !object(value.args)
       ) throw new Error('Invalid companion tool request')

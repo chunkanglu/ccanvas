@@ -20,7 +20,7 @@ const result = await build({
   },
 })
 const bundle = result[0].output.find(entry => entry.type === 'chunk' && entry.isEntry)
-const { default: companion } = await import(`data:text/javascript;base64,${Buffer.from(bundle.code).toString('base64')}`)
+const { default: companion, ensureCanvasTools } = await import(`data:text/javascript;base64,${Buffer.from(bundle.code).toString('base64')}`)
 
 const envKeys = [
   'CCANVAS_COMPANION_HOST', 'CCANVAS_COMPANION_PORT', 'CCANVAS_COMPANION_TOKEN',
@@ -212,7 +212,7 @@ test('companion authenticates, replays events, scopes controls and preserves nat
 
   // canvas_browser round-trips through the host; the host decides which
   // browsers exist for this agent.
-  assert.deepEqual(tools.map(tool => tool.name), ['canvas_browser'])
+  assert.deepEqual(tools.map(tool => tool.name), ['canvas_browser', 'ccanvas'])
   const browserCall = tools[0].execute('call-1', { action: 'snapshot', browser: 'docs', ref: undefined })
   const toolRequest = await waitFor(
     () => records.find(frame => frame.type === 'tool_request'),
@@ -346,4 +346,31 @@ test('companion authenticates, replays events, scopes controls and preserves nat
   )
   assert.equal(shutdown.event.reason, 'quit')
   assert.equal('ui' in pi, false, 'companion must not patch or replace native UI')
+})
+
+test('ccanvas tools are kept active between runs, except in already-affected sessions', () => {
+  const make = (active, branch = []) => {
+    const calls = []
+    return {
+      calls,
+      pi: {
+        getActiveTools: () => active,
+        getAllTools: () => ['read', 'canvas_browser', 'ccanvas', 'canvas'].map(name => ({ name })),
+        setActiveTools: next => calls.push(next),
+      },
+      ctx: { sessionManager: { getBranch: () => branch } },
+    }
+  }
+  // A tool-profile reset dropped them: restore without touching others.
+  const reset = make(['read', 'canvas'])
+  ensureCanvasTools(reset.pi, reset.ctx)
+  assert.deepEqual(reset.calls, [['read', 'canvas', 'canvas_browser', 'ccanvas']])
+  // Already active: no churn.
+  const active = make(['read', 'canvas_browser', 'ccanvas'])
+  ensureCanvasTools(active.pi, active.ctx)
+  assert.deepEqual(active.calls, [])
+  // A session that recorded a mid-run addition keeps the user's recovery path.
+  const affected = make(['read'], [{ type: 'message', message: { role: 'toolResult', addedToolNames: ['canvas_browser'] } }])
+  ensureCanvasTools(affected.pi, affected.ctx)
+  assert.deepEqual(affected.calls, [])
 })

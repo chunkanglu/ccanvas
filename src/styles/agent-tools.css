@@ -751,3 +751,18 @@
 .agent-gate__facts dt { color: var(--ink-faint); }
 .agent-gate__facts dd { margin: 0; overflow-wrap: anywhere; }
 .agent-gate__btn { align-self: flex-start; border-radius: var(--r-sm); }
+
+/* ---------- agent-spawned provenance ---------- */
+.widget__spawned {
+  max-width: 140px;
+  overflow: hidden;
+  flex-shrink: 1;
+  padding: 1px 6px;
+  border: 1px dashed var(--line-hard);
+  border-radius: 999px;
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

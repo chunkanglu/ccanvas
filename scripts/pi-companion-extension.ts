@@ -4,8 +4,8 @@
  * This extension is inert unless a ccanvas-owned runtime provides a complete
  * private loopback capability configuration. It never patches Pi UI, registers
  * commands, changes trust, or replaces native extension dialogs. Under ccanvas
- * it registers one tool, `canvas_browser`, whose actions the host restricts to
- * web widgets the user connected to this agent with an arrow.
+ * it registers `canvas_browser` and `canvas`; the host restricts their actions
+ * to this agent's own tab, its arrow-connected browsers, and what it spawned.
  */
 import { createConnection, type Socket } from 'node:net'
 import { homedir } from 'node:os'
@@ -336,12 +336,13 @@ const BROWSER_ACTIONS = [
 const TOOL_TIMEOUT_MS = 60_000
 
 /**
- * Ask ccanvas to perform a browser action. The host owns canvas state: it
+ * Ask ccanvas to perform a browser or canvas action. The host owns canvas state: it
  * resolves which named web widgets this agent is connected to by arrows, so a
  * Pi process can never address browsers the user did not wire to it.
  */
-function requestBrowser(
+function requestTool(
   runtime: ProcessRuntime,
+  tool: 'browser' | 'canvas',
   action: string,
   args: Record<string, unknown>,
   signal?: AbortSignal,
@@ -349,21 +350,21 @@ function requestBrowser(
   if (!runtime.authenticated || !runtime.socket || runtime.socket.destroyed) {
     return Promise.reject(new Error('ccanvas is not attached; open this agent on the canvas and retry'))
   }
-  const requestId = `${runtime.config.generation}-browser-${++runtime.nextToolRequest}`
+  const requestId = `${runtime.config.generation}-${tool}-${++runtime.nextToolRequest}`
   const encoded = encodePiCompanionFrame({
     v: 1,
     type: 'tool_request',
     widgetId: runtime.config.widgetId,
     generation: runtime.config.generation,
     requestId,
-    tool: 'browser',
+    tool,
     action,
     args,
   })
   return new Promise<string>((resolve, reject) => {
     const timer = setTimeout(() => {
       runtime.toolRequests.delete(requestId)
-      reject(new Error('ccanvas browser action timed out'))
+      reject(new Error(`ccanvas ${tool} action timed out`))
     }, TOOL_TIMEOUT_MS)
     runtime.toolRequests.set(requestId, { resolve, reject, timer })
     signal?.addEventListener('abort', () => {
@@ -371,7 +372,7 @@ function requestBrowser(
       if (!pending) return
       runtime.toolRequests.delete(requestId)
       clearTimeout(pending.timer)
-      reject(new Error('Browser action aborted'))
+      reject(new Error(`ccanvas ${tool} action aborted`))
     }, { once: true })
     write(runtime, encoded)
   })
@@ -409,10 +410,91 @@ function registerBrowserTool(pi: ExtensionAPI, runtime: ProcessRuntime): void {
     async execute(_toolCallId, params, signal) {
       const { action, ...rest } = params as { action: string } & Record<string, unknown>
       const args = Object.fromEntries(Object.entries(rest).filter(([, value]) => value !== undefined))
-      const text = await requestBrowser(runtime, action, args, signal)
+      const text = await requestTool(runtime, 'browser', action, args, signal)
       return { content: [{ type: 'text', text }], details: { action, browser: args.browser } }
     },
   })
+}
+
+const CANVAS_ACTIONS = [
+  'list', 'spawn_agent', 'spawn_browser', 'spawn_note', 'spawn_file', 'spawn_terminal',
+  'connect', 'message', 'status', 'close',
+] as const
+
+function registerCanvasTool(pi: ExtensionAPI, runtime: ProcessRuntime): void {
+  pi.registerTool({
+    // `ccanvas`, not `canvas`: users may already have an unrelated `canvas` tool.
+    name: 'ccanvas',
+    label: 'ccanvas',
+    description:
+      'Create and wire panels on the ccanvas canvas next to this agent. New panels are automatically connected to this agent with an arrow. '
+      + 'Actions: list (this agent, what it spawned, what is connected), spawn_agent (a Pi agent; optional prompt starts it working), '
+      + 'spawn_browser (named browser, drivable with canvas_browser), spawn_note, spawn_file (viewer for a file in this agent\'s folder), '
+      + 'spawn_terminal, connect (arrow between this agent and elements it spawned; agent-to-agent arrows can carry flow logic), '
+      + 'message (send a prompt to a spawned or connected agent), status (agent activity and last output line), close (remove an element this agent spawned).',
+    promptSnippet: 'Spawn and connect agents, browsers, notes, files and terminals on the ccanvas canvas',
+    promptGuidelines: [
+      'Use ccanvas only when the user asks for new canvas panels or delegation to other agents; each spawned agent is a separate Pi session with its own model usage.',
+      'After ccanvas spawn_agent, results do not return automatically unless flows are resumed and return_output was set; use ccanvas status or message to coordinate.',
+      'Use canvas_browser (not ccanvas) to operate a browser after creating it with ccanvas spawn_browser.',
+    ],
+    parameters: Type.Object({
+      action: StringEnum(CANVAS_ACTIONS),
+      title: Type.Optional(Type.String({ description: 'Panel title' })),
+      prompt: Type.Optional(Type.String({ description: 'spawn_agent: task for the new agent; message: text to send' })),
+      start: Type.Optional(Type.Boolean({ description: 'spawn_agent: submit prompt immediately (default true when prompt is given)' })),
+      return_output: Type.Optional(Type.Boolean({ description: 'spawn_agent: add a flow arrow piping its finished output back to this agent' })),
+      cwd: Type.Optional(Type.String({ description: 'spawn_agent/spawn_terminal: subfolder inside this agent\'s folder' })),
+      provider: Type.Optional(Type.String()),
+      model: Type.Optional(Type.String()),
+      name: Type.Optional(Type.String({ description: 'spawn_browser: browser name' })),
+      url: Type.Optional(Type.String({ description: 'spawn_browser: initial URL' })),
+      text: Type.Optional(Type.String({ description: 'spawn_note: markdown text' })),
+      path: Type.Optional(Type.String({ description: 'spawn_file: file path inside this agent\'s folder' })),
+      target: Type.Optional(Type.String({ description: 'Element id, agent title, or browser name for connect/message/status/close' })),
+      from: Type.Optional(Type.String({ description: 'connect: source element (default this agent)' })),
+      to: Type.Optional(Type.String({ description: 'connect: destination element' })),
+      when: Type.Optional(StringEnum(['always', 'success', 'failure', 'match', 'runtime-error'] as const)),
+      flow_prompt: Type.Optional(Type.String({ description: 'connect: prompt for the target agent; {{output}} inserts the source output' })),
+    }),
+    async execute(_toolCallId, params, signal) {
+      const { action, ...rest } = params as { action: string } & Record<string, unknown>
+      const args = Object.fromEntries(Object.entries(rest).filter(([, value]) => value !== undefined))
+      const text = await requestTool(runtime, 'canvas', action, args, signal)
+      return { content: [{ type: 'text', text }], details: { action } }
+    },
+  })
+}
+
+const CANVAS_TOOL_NAMES = ['canvas_browser', 'ccanvas'] as const
+
+/**
+ * Keep the ccanvas tools active in ccanvas-managed sessions.
+ *
+ * Tool-profile extensions may reset the active set at session start, leaving
+ * the agent to re-enable these tools *during* a run. Pi records a tool enabled
+ * by another tool's execution as `addedToolNames`, and Anthropic requests then
+ * carry a `tool_reference` that some sessions reject ("Tool reference ... not
+ * found in available tools"). Activating between runs records nothing.
+ *
+ * Sessions whose history already recorded such an addition are left alone so
+ * that removing the tool remains a working recovery path.
+ */
+export function ensureCanvasTools(pi: Pick<ExtensionAPI, 'getActiveTools' | 'getAllTools' | 'setActiveTools'>, ctx: ExtensionContext): void {
+  const manager = ctx.sessionManager as { getBranch?: () => unknown[] }
+  const branch = typeof manager.getBranch === 'function' ? manager.getBranch() : []
+  const affected = branch.some(raw => {
+    const message = (raw as { type?: string; message?: { role?: string; addedToolNames?: unknown } })
+    return message.type === 'message'
+      && message.message?.role === 'toolResult'
+      && Array.isArray(message.message.addedToolNames)
+      && message.message.addedToolNames.some(name => (CANVAS_TOOL_NAMES as readonly string[]).includes(String(name)))
+  })
+  if (affected) return
+  const registered = new Set(pi.getAllTools().map(tool => tool.name))
+  const active = pi.getActiveTools()
+  const missing = CANVAS_TOOL_NAMES.filter(name => registered.has(name) && !active.includes(name))
+  if (missing.length) pi.setActiveTools([...active, ...missing])
 }
 
 function retain(runtime: ProcessRuntime, entry: ReplayEntry): void {
@@ -646,6 +728,7 @@ export default function companion(pi: ExtensionAPI): void {
   if (!runtime) return
   const owner = ++runtime.owner
   registerBrowserTool(pi, runtime)
+  registerCanvasTool(pi, runtime)
   let ctx: ExtensionContext | undefined
   let settledOutcome: 'completed' | 'aborted' | 'failed' | 'unknown' = 'unknown'
   runtime.controlHandler = async frame => {
@@ -736,6 +819,7 @@ export default function companion(pi: ExtensionAPI): void {
   })
   pi.on('before_agent_start', (_event, next) => {
     remember(next)
+    ensureCanvasTools(pi, next)
     settledOutcome = 'unknown'
     runtime.currentRunId = `${runtime.config.generation}:${++runtime.nextRun}`
     runtime.currentAssistantText = ''

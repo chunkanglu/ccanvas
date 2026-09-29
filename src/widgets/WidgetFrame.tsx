@@ -101,6 +101,11 @@ export function WidgetFrame({
   const mutateElement = useStore((s) => s.mutateElement)
   const beginHistory = useStore((s) => s.beginHistory)
   const openAgentWizard = useStore((s) => s.openAgentWizard)
+  const spawnerTitle = useStore((s) => {
+    if (!el.spawnedBy) return undefined
+    const spawner = s.tabs.find((tab) => tab.id === workspaceId)?.elements.find((e) => e.id === el.spawnedBy)
+    return spawner?.type === 'widget' ? spawner.title : 'removed agent'
+  })
   const activationRequired = useStore(
     (s) => s.tabs.find((tab) => tab.id === workspaceId)?.activationRequired === true,
   )
@@ -367,6 +372,11 @@ export function WidgetFrame({
         {!renaming && folder && (
           <span className="widget__cwd" title={el.cwd}>
             {folder}
+          </span>
+        )}
+        {spawnerTitle && (
+          <span className="widget__spawned" title={`Created by agent "${spawnerTitle}" with the ccanvas tool`}>
+            ↳ {spawnerTitle}
           </span>
         )}
         {el.kind === 'agent' && (
