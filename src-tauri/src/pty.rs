@@ -34,6 +34,8 @@ const SCROLLBACK_CAP: usize = 1024 * 1024; // 1 MiB
 struct Pump {
     live: bool,
     scrollback: Vec<u8>,
+    /// Output arrived since the last snapshot save.
+    dirty: bool,
 }
 
 pub struct Session {
@@ -41,6 +43,9 @@ pub struct Session {
     writer: Box<dyn Write + Send>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
     pump: Arc<Mutex<Pump>>,
+    /// Plain terminals opt in to restart snapshots (see `snapshot`). Agent
+    /// terminals resume through their harness instead.
+    persist: bool,
 }
 
 #[derive(Default)]
@@ -106,6 +111,22 @@ mod tests {
             assert_eq!(cmd.get_env("KEEP_ME"), Some(OsStr::new("unchanged")));
         }
     }
+
+    #[test]
+    fn restored_history_drops_terminal_queries_but_keeps_output() {
+        let saved = b"\x1b[31mred\x1b[0m\x1b[c\x1b[6n\x1b[>c\x1b[14t\x1b[?2004$p\x1b[>q\x1b]11;?\x07\x1bP$qm\x1b\\\x1b]0;title\x07ok\r\n";
+        let clean = snapshot::strip_queries(saved);
+        assert_eq!(clean, b"\x1b[31mred\x1b[0m\x1b]0;title\x07ok\r\n".to_vec());
+        // a truncated trailing sequence is dropped, not replayed half-open
+        assert_eq!(snapshot::strip_queries(b"done\x1b[3"), b"done".to_vec());
+    }
+
+    #[test]
+    fn snapshot_file_names_are_unique_and_path_safe() {
+        assert_eq!(snapshot::file_stem("ws:a/../b"), "77733a612f2e2e2f62");
+        assert_ne!(snapshot::file_stem("a:b"), snapshot::file_stem("a_b"));
+        assert!(snapshot::RESTORE_TRAILER.ends_with(b"\x1b[0m\r\n"));
+    }
 }
 
 /// Drop the oldest output once scrollback exceeds the cap, advancing to the
@@ -133,7 +154,9 @@ pub fn pty_open(
     cols: u16,
     rows: u16,
     cwd: Option<String>,
+    restore: Option<bool>,
 ) -> Result<bool, String> {
+    let restore = restore.unwrap_or(false);
     {
         let mut sessions = state.sessions.lock().unwrap();
         if let Some(s) = sessions.get_mut(&id) {
@@ -154,7 +177,7 @@ pub fn pty_open(
             sessions.remove(&id);
         }
     }
-    spawn_session(app, state, id, cols, rows, cwd)?;
+    spawn_session(app, state, id, cols, rows, cwd, restore)?;
     Ok(false)
 }
 
@@ -165,7 +188,16 @@ fn spawn_session(
     cols: u16,
     rows: u16,
     cwd: Option<String>,
+    restore: bool,
 ) -> Result<(), String> {
+    // A restored terminal starts in its last live directory (if it still
+    // exists) and begins with the saved history, so the next save carries it.
+    let restored = if restore {
+        snapshot::load(&app, &id)
+    } else {
+        None
+    };
+    let cwd = restored.as_ref().and_then(|r| r.cwd.clone()).or(cwd);
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -190,7 +222,8 @@ fn spawn_session(
 
     let pump = Arc::new(Mutex::new(Pump {
         live: false,
-        scrollback: Vec::new(),
+        scrollback: restored.map(|r| r.history).unwrap_or_default(),
+        dirty: false,
     }));
 
     // insert before starting the reader so the exit cleanup below can never race
@@ -202,6 +235,7 @@ fn spawn_session(
             writer,
             child,
             pump: pump.clone(),
+            persist: restore,
         },
     );
 
@@ -218,6 +252,7 @@ fn spawn_session(
                     let emit = {
                         let mut p = pump.lock().unwrap();
                         p.scrollback.extend_from_slice(&chunk[..n]);
+                        p.dirty = true;
                         if p.scrollback.len() > SCROLLBACK_CAP {
                             trim_scrollback(&mut p.scrollback);
                         }
@@ -314,10 +349,260 @@ pub fn pty_detach(state: State<'_, PtyManager>, id: String) {
     }
 }
 
-/// Tear the shell down for good. Called when the widget is actually deleted.
+/// Tear the shell down for good. Called when the widget is actually deleted,
+/// so its restart snapshot goes too.
 #[tauri::command]
-pub fn pty_kill(state: State<'_, PtyManager>, id: String) {
+pub fn pty_kill(app: AppHandle, state: State<'_, PtyManager>, id: String) {
     if let Some(mut s) = state.sessions.lock().unwrap().remove(&id) {
         let _ = s.child.kill();
+    }
+    snapshot::remove(&app, &id);
+}
+
+/// Save a restart snapshot for every persistent session. `only_dirty` skips
+/// sessions with no output since their last save (the periodic crash guard);
+/// app exit saves everything.
+pub fn save_snapshots(app: &AppHandle, only_dirty: bool) {
+    let Some(mgr) = app.try_state::<PtyManager>() else {
+        return;
+    };
+    let pending: Vec<(String, Option<u32>, Vec<u8>)> = {
+        let sessions = mgr.sessions.lock().unwrap();
+        sessions
+            .iter()
+            .filter(|(_, s)| s.persist)
+            .filter_map(|(id, s)| {
+                let mut p = s.pump.lock().unwrap();
+                if only_dirty && !p.dirty {
+                    return None;
+                }
+                p.dirty = false;
+                Some((id.clone(), s.child.process_id(), p.scrollback.clone()))
+            })
+            .collect()
+    };
+    // cwd lookup and disk IO happen outside the session lock
+    for (id, pid, history) in pending {
+        let cwd = pid.and_then(snapshot::process_cwd);
+        snapshot::save(app, &id, &history, cwd.as_deref());
+    }
+}
+
+/// Restart snapshots for plain terminals: raw output plus the shell's working
+/// directory, stored privately under the app data dir — never in the portable
+/// `.ccnvs` document, since terminal output can contain secrets.
+pub mod snapshot {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, SystemTime};
+
+    use tauri::{AppHandle, Manager};
+
+    /// Snapshots unused this long are pruned at startup.
+    const MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+
+    pub struct Restored {
+        pub history: Vec<u8>,
+        pub cwd: Option<String>,
+    }
+
+    fn dir(app: &AppHandle) -> Option<PathBuf> {
+        app.path()
+            .app_data_dir()
+            .ok()
+            .map(|d| d.join("terminal-snapshots"))
+    }
+
+    /// Hex of the runtime id: unique, filesystem-safe, no traversal.
+    pub(crate) fn file_stem(id: &str) -> String {
+        id.bytes().map(|b| format!("{b:02x}")).collect()
+    }
+
+    fn paths(app: &AppHandle, id: &str) -> Option<(PathBuf, PathBuf)> {
+        let d = dir(app)?;
+        let stem = file_stem(id);
+        Some((d.join(format!("{stem}.out")), d.join(format!("{stem}.cwd"))))
+    }
+
+    fn ensure_private_dir(d: &Path) -> std::io::Result<()> {
+        fs::create_dir_all(d)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(d, fs::Permissions::from_mode(0o700))?;
+        }
+        Ok(())
+    }
+
+    fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        let tmp = path.with_extension("tmp");
+        {
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create(true).truncate(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            use std::io::Write;
+            let mut file = options.open(&tmp)?;
+            file.write_all(bytes)?;
+        }
+        fs::rename(tmp, path)
+    }
+
+    pub fn save(app: &AppHandle, id: &str, history: &[u8], cwd: Option<&str>) {
+        let (Some(d), Some((out, cwd_path))) = (dir(app), paths(app, id)) else {
+            return;
+        };
+        if ensure_private_dir(&d).is_err() {
+            return;
+        }
+        let _ = write_private(&out, history);
+        match cwd {
+            Some(c) => {
+                let _ = write_private(&cwd_path, c.as_bytes());
+            }
+            None => {
+                let _ = fs::remove_file(&cwd_path);
+            }
+        }
+    }
+
+    pub fn load(app: &AppHandle, id: &str) -> Option<Restored> {
+        let (out, cwd_path) = paths(app, id)?;
+        let saved = fs::read(&out).ok()?;
+        let cwd = fs::read_to_string(&cwd_path)
+            .ok()
+            .map(|c| c.trim_end_matches('\n').to_string())
+            .filter(|c| Path::new(c).is_dir());
+        let mut history = strip_queries(&saved);
+        if history.is_empty() {
+            return None;
+        }
+        history.extend_from_slice(RESTORE_TRAILER);
+        Some(Restored { history, cwd })
+    }
+
+    pub fn remove(app: &AppHandle, id: &str) {
+        if let Some((out, cwd)) = paths(app, id) {
+            let _ = fs::remove_file(out);
+            let _ = fs::remove_file(cwd);
+        }
+    }
+
+    /// Delete snapshots nobody has resumed or saved for `MAX_AGE`.
+    pub fn prune(app: &AppHandle) {
+        let Some(d) = dir(app) else { return };
+        let Ok(entries) = fs::read_dir(d) else { return };
+        let now = SystemTime::now();
+        for entry in entries.flatten() {
+            let stale = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| now.duration_since(t).ok())
+                .is_some_and(|age| age > MAX_AGE);
+            if stale {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+
+    /// Leave whatever full-screen state the old session ended in, then mark
+    /// where live output resumes. Soft reset (DECSTR) plus explicit mouse /
+    /// alt-screen / bracketed-paste exits, then a dim separator.
+    pub(crate) const RESTORE_TRAILER: &[u8] = b"\x1b[?1049l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[!p\x1b[0m\r\n\x1b[2m\xe2\x94\x80\xe2\x94\x80 restored from previous session \xe2\x94\x80\xe2\x94\x80\x1b[0m\r\n";
+
+    /// Remove sequences that make the terminal *answer*. Replaying them into a
+    /// fresh xterm would type stale replies (e.g. `^[[?1;2c`) into the new
+    /// shell. Drops: CSI with final `c`/`n`/`t` (DA, DSR/CPR, window reports),
+    /// DECRQM (`$p`), XTVERSION (`>q`), OSC color queries (`;?`), and all DCS
+    /// strings (DECRQSS, XTGETTCAP). Everything else is kept verbatim.
+    pub(crate) fn strip_queries(input: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(input.len());
+        let mut i = 0;
+        while i < input.len() {
+            if input[i] != 0x1b || i + 1 >= input.len() {
+                out.push(input[i]);
+                i += 1;
+                continue;
+            }
+            match input[i + 1] {
+                b'[' => {
+                    // CSI: parameters/intermediates 0x20-0x3f, final 0x40-0x7e
+                    let mut j = i + 2;
+                    while j < input.len() && (0x20..=0x3f).contains(&input[j]) {
+                        j += 1;
+                    }
+                    if j >= input.len() {
+                        break; // truncated at the end: drop the fragment
+                    }
+                    let body = &input[i + 2..j];
+                    let final_byte = input[j];
+                    let query = matches!(final_byte, b'c' | b'n' | b't')
+                        || (final_byte == b'p' && body.contains(&b'$'))
+                        || (final_byte == b'q' && body.first() == Some(&b'>'));
+                    if !query {
+                        out.extend_from_slice(&input[i..=j]);
+                    }
+                    i = j + 1;
+                }
+                b']' | b'P' => {
+                    // OSC / DCS: terminated by BEL or ST (ESC \)
+                    let mut j = i + 2;
+                    let mut end = None;
+                    while j < input.len() {
+                        if input[j] == 0x07 {
+                            end = Some(j + 1);
+                            break;
+                        }
+                        if input[j] == 0x1b && input.get(j + 1) == Some(&b'\\') {
+                            end = Some(j + 2);
+                            break;
+                        }
+                        j += 1;
+                    }
+                    let Some(end) = end else { break };
+                    let is_dcs = input[i + 1] == b'P';
+                    let body = &input[i + 2..end];
+                    let color_query = body.windows(2).any(|w| w == b";?");
+                    if !is_dcs && !color_query {
+                        out.extend_from_slice(&input[i..end]);
+                    }
+                    i = end;
+                }
+                _ => {
+                    out.push(input[i]);
+                    i += 1;
+                }
+            }
+        }
+        out
+    }
+
+    /// The shell's current directory, read natively (no shell cooperation).
+    pub fn process_cwd(pid: u32) -> Option<String> {
+        #[cfg(target_os = "linux")]
+        {
+            return fs::read_link(format!("/proc/{pid}/cwd"))
+                .ok()
+                .map(|p| p.to_string_lossy().into_owned());
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let output = std::process::Command::new("/usr/sbin/lsof")
+                .args(["-a", "-p", &pid.to_string(), "-d", "cwd", "-Fn"])
+                .output()
+                .ok()?;
+            return String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .find_map(|line| line.strip_prefix('n').map(str::to_string));
+        }
+        #[allow(unreachable_code)]
+        {
+            let _ = pid;
+            None
+        }
     }
 }

@@ -124,6 +124,9 @@ pub struct PiOpenResult {
     reattached: bool,
     generation: u64,
     companion_connected: bool,
+    /// The recorded session file was never written by Pi, so a new session
+    /// was started instead of resuming.
+    session_reset: bool,
 }
 
 #[derive(Deserialize)]
@@ -267,16 +270,41 @@ fn session_lease_conflict<'a>(
         .map(|(id, _, _)| id.to_string())
 }
 
-fn exact_session_file(value: Option<String>) -> Result<Option<String>, String> {
-    let Some(value) = value else { return Ok(None) };
+#[derive(Debug, PartialEq)]
+enum SessionResume {
+    /// No recorded session: start a new one.
+    New,
+    /// Resume this exact, existing session file.
+    Existing(String),
+    /// Pi writes a session file only after the first assistant message, so an
+    /// agent that never got a reply recorded a path Pi never created. There is
+    /// nothing to resume and nothing lost: start a new session.
+    NeverWritten,
+}
+
+fn session_resume(value: Option<String>) -> Result<SessionResume, String> {
+    let Some(value) = value else {
+        return Ok(SessionResume::New);
+    };
     if !valid_text(&value, 8192) {
         return Err("Invalid Pi session file".into());
     }
     let path = Path::new(&value);
-    if !path.is_absolute() || !path.is_file() {
+    if !path.is_absolute() {
         return Err("Pi resume requires an existing absolute session file".into());
     }
-    Ok(Some(value))
+    // symlink_metadata: a dangling symlink exists (and is refused below), it
+    // is not "never written".
+    match std::fs::symlink_metadata(path) {
+        Ok(_) if path.is_file() => Ok(SessionResume::Existing(value)),
+        Err(e)
+            if e.kind() == std::io::ErrorKind::NotFound
+                && path.extension().is_some_and(|ext| ext == "jsonl") =>
+        {
+            Ok(SessionResume::NeverWritten)
+        }
+        _ => Err("Pi resume requires an existing absolute session file".into()),
+    }
 }
 
 #[cfg(unix)]
@@ -1294,6 +1322,7 @@ pub fn pi_open(
                 reattached: true,
                 generation: session.generation,
                 companion_connected: connected,
+                session_reset: false,
             });
         }
         if let Some(dead) = inner.sessions.remove(&request.id) {
@@ -1307,7 +1336,11 @@ pub fn pi_open(
     validate_model_part(&request.provider, "provider")?;
     validate_model_part(&request.model, "model")?;
     validate_thinking_level(&request.thinking_level)?;
-    let session_file = exact_session_file(request.session_file.clone())?;
+    let (session_file, session_reset) = match session_resume(request.session_file.clone())? {
+        SessionResume::New => (None, false),
+        SessionResume::Existing(path) => (Some(path), false),
+        SessionResume::NeverWritten => (None, true),
+    };
     let session_lease = match &session_file {
         Some(path) => Some(std::fs::canonicalize(path).map_err(|e| e.to_string())?),
         None => None,
@@ -1500,6 +1533,7 @@ pub fn pi_open(
         reattached: false,
         generation,
         companion_connected: false,
+        session_reset,
     })
 }
 
@@ -2246,11 +2280,27 @@ mod tests {
     }
 
     #[test]
-    fn exact_resume_rejects_guesses_and_missing_paths() {
-        assert!(exact_session_file(None).unwrap().is_none());
-        assert!(exact_session_file(Some("partial-id".into())).is_err());
-        assert!(
-            exact_session_file(Some("/definitely/missing/ccanvas-session.jsonl".into())).is_err()
+    fn exact_resume_rejects_guesses_and_starts_fresh_for_never_written_sessions() {
+        assert_eq!(session_resume(None).unwrap(), SessionResume::New);
+        assert!(session_resume(Some("partial-id".into())).is_err());
+        assert!(session_resume(Some("relative/session.jsonl".into())).is_err());
+        // Pi had not flushed this session (no assistant reply yet)
+        assert_eq!(
+            session_resume(Some("/definitely/missing/ccanvas-session.jsonl".into())).unwrap(),
+            SessionResume::NeverWritten
         );
+        // a missing non-session path is still refused
+        assert!(session_resume(Some("/definitely/missing/notes.txt".into())).is_err());
+        // an existing directory is not a session file
+        let dir = std::env::temp_dir();
+        assert!(session_resume(Some(dir.to_string_lossy().into_owned())).is_err());
+        let file = dir.join(format!("ccanvas-resume-{}.jsonl", std::process::id()));
+        std::fs::write(&file, b"{}\n").unwrap();
+        let path = file.to_string_lossy().into_owned();
+        assert_eq!(
+            session_resume(Some(path.clone())).unwrap(),
+            SessionResume::Existing(path)
+        );
+        let _ = std::fs::remove_file(file);
     }
 }

@@ -204,6 +204,9 @@ export function PiTerminalBody({ workspaceId, el, active, visible = true }: Prop
           return
         }
         runtimeRef.current = runtime
+        if (runtime.sessionReset) {
+          terminal.write('\x1b[2m· the previous Pi session was never saved (Pi saves after the first reply) — starting a new session\x1b[0m\r\n')
+        }
         transportOwner = registerTransport(runtimeId, {
           send: data => runtime.send(data),
           prompt: (text, requestId) => runtime.control(managedPiPromptControl(
@@ -448,12 +451,25 @@ export function PiTerminalBody({ workspaceId, el, active, visible = true }: Prop
     }
   }, [])
 
+  // Zoom changes pixels, not the widget's logical size, so a zoom-only change
+  // keeps the grid. Re-fitting re-rounds cols/rows at the new font size; the
+  // resulting PTY resize makes Pi's main-screen TUI clear scrollback and
+  // redraw, which jumps the view to the top of the transcript.
+  const appliedRef = useRef({ k, armed })
   useEffect(() => {
     const terminal = termRef.current
     if (!terminal) return
+    const zoomOnly = appliedRef.current.armed === armed && appliedRef.current.k !== k
+    appliedRef.current = { k, armed }
+    const grid = { cols: terminal.cols, rows: terminal.rows }
     terminal.options.fontSize = BASE_FONT * k
     const frame = requestAnimationFrame(() => {
       try {
+        if (zoomOnly) {
+          if (terminal.cols !== grid.cols || terminal.rows !== grid.rows) terminal.resize(grid.cols, grid.rows)
+          terminal.refresh(0, terminal.rows - 1)
+          return
+        }
         fitRef.current?.fit()
         runtimeRef.current?.resize(terminal.cols, terminal.rows)
       } catch { /* hidden/unmeasurable */ }

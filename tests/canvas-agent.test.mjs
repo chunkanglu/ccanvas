@@ -104,3 +104,22 @@ test('messaging an agent that is not running reports it instead of pretending', 
   await assert.rejects(run('message', { target: 'idle', prompt: 'hi' }), /not running yet/)
   assert.match(await run('status'), /"idle".*: off/)
 })
+
+test('arrows are hit and bounded where they are drawn, not at stale stored coordinates', async () => {
+  const a = agent('a', { x: 0, y: 0, w: 200, h: 100 })
+  const b = agent('b', { x: 600, y: 0, w: 200, h: 100 })
+  // bound connector with placeholder coords (what programmatic connectors carry)
+  const arrow = { id: 'ar', type: 'arrow', x1: 0, y1: 0, x2: 0, y2: 0, color: '#fff', size: 2, from: { id: 'a' }, to: { id: 'b' }, z: 0 }
+  const byId = new Map([a, b, arrow].map(el => [el.id, el]))
+  const midpoint = { x: 400, y: 50 }
+  assert.equal(canvas.hitTest(arrow, midpoint, 6), false, 'raw geometry misses the drawn line')
+  assert.equal(canvas.hitTest(canvas.resolvedArrow(arrow, byId), midpoint, 6), true)
+  // bounds used by fit/minimap follow the drawn line, not the origin
+  const bounds = canvas.boundsOfMany(canvas.withResolvedArrows([arrow, a, b]).filter(el => el.type === 'arrow'))
+  assert.deepEqual([bounds.x, bounds.y, bounds.w, bounds.h], [200, 50, 400, 0])
+  // the store docks programmatic connectors when they are added
+  reset([a, b])
+  canvas.useStore.getState().addElementsInTab('ws', [arrow])
+  const stored = tab().elements.find(el => el.id === 'ar')
+  assert.deepEqual([stored.x1, stored.y1, stored.x2, stored.y2], [200, 50, 600, 50])
+})

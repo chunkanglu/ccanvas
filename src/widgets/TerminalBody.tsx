@@ -533,7 +533,7 @@ function PtyTerminalBody({ workspaceId, el, active, visible = true }: TerminalBo
     }
 
     connectPty(
-      { id: runtimeId, cols: term.cols, rows: term.rows, cwd: el.cwd || undefined, launch },
+      { id: runtimeId, cols: term.cols, rows: term.rows, cwd: el.cwd || undefined, launch, restore: !isAgent },
       {
         onData: (chunk) => {
           term.write(chunk as string | Uint8Array)
@@ -654,13 +654,24 @@ function PtyTerminalBody({ workspaceId, el, active, visible = true }: TerminalBo
   }, [])
 
   // apply the supersample factor: bigger font into a counter-scaled, k× sized
-  // host keeps the same cols/rows (no shell reflow) but renders at k× pixels
+  // host renders at k× pixels. A zoom-only change keeps the grid explicitly —
+  // re-fitting re-rounds cols/rows at the new font size, and the PTY resize
+  // makes full-screen programs (Pi's TUI, vim, less) redraw and lose scroll.
+  const appliedRef = useRef({ k, armed })
   useEffect(() => {
     const term = termRef.current
     if (!term) return
+    const zoomOnly = appliedRef.current.armed === armed && appliedRef.current.k !== k
+    appliedRef.current = { k, armed }
+    const grid = { cols: term.cols, rows: term.rows }
     term.options.fontSize = BASE_FONT * k
     const raf = requestAnimationFrame(() => {
       try {
+        if (zoomOnly) {
+          if (term.cols !== grid.cols || term.rows !== grid.rows) term.resize(grid.cols, grid.rows)
+          term.refresh(0, term.rows - 1)
+          return
+        }
         fitRef.current?.fit()
         if (modeRef.current === 'pty') transportRef.current?.resize(term.cols, term.rows)
       } catch {

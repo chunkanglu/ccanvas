@@ -46,6 +46,9 @@ export type ManagedPiHandlers = {
 export type ManagedPiRuntime = {
   readonly generation: number
   readonly reused: boolean
+  /** The recorded session file was never written by Pi (no reply yet), so a
+   *  new session was started instead of resuming. */
+  readonly sessionReset: boolean
   start(): void
   send(data: string): void
   resize(cols: number, rows: number): void
@@ -60,6 +63,7 @@ type OpenResult = {
   reattached: boolean
   generation: number
   companionConnected: boolean
+  sessionReset?: boolean
 }
 
 type Event<T> = { payload: T }
@@ -277,6 +281,7 @@ export async function connectManagedPi(
     return {
       generation,
       reused: result.reattached,
+      sessionReset: result.sessionReset === true,
       start() {
         if (started || closed) return
         started = true
