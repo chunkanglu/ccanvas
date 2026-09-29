@@ -38,6 +38,9 @@ export type PtyOpts = {
   cwd?: string
   /** command to run once the shell is live (e.g. `claude --resume <id>`) */
   launch?: string
+  /** Plain terminals: resume the saved history and directory after an app
+   *  restart (desktop only). Agent terminals resume through their harness. */
+  restore?: boolean
 }
 export type PtyHandlers = {
   onData: (chunk: Uint8Array | string) => void
@@ -66,6 +69,7 @@ async function connectTauri(opts: PtyOpts, h: PtyHandlers): Promise<Term | null>
       cols: opts.cols,
       rows: opts.rows,
       cwd: opts.cwd ?? null,
+      restore: opts.restore ?? false,
     })
     console.debug(
       `[pty] open id=${opts.id} reused=${reused} launch=${opts.launch ?? ''} cwd=${opts.cwd ?? ''}`,

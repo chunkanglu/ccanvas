@@ -2,7 +2,7 @@
 
 Personal fork of [DevoidSloth/ccanvas](https://github.com/DevoidSloth/ccanvas),
 maintained at [chunkanglu/ccanvas](https://github.com/chunkanglu/ccanvas).
-**Phases 0–4 are accepted; Phase 5 makes Pi the default for new agents.**
+**Phases 0–6 are complete; Pi is the default for new agents.**
 Pi agents keep the native Pi TUI while ccanvas adds an acknowledged composer,
 provider-neutral flows, structured tracking, scoped session usage, and explicit
 knowledge-graph sources. Existing Claude agents stay Claude.
@@ -29,6 +29,7 @@ knowledge-graph sources. Existing Claude agents stay Claude.
   [Native web portals](docs/native-web-portals.md) ·
   [Agents driving canvas browsers](docs/agent-browser-control.md) ·
   [Agents creating canvas panels](docs/agent-canvas-control.md) ·
+  [Terminals resume after restart](docs/terminal-resume.md) ·
   [Installed-extension compatibility findings](docs/pi-compatibility.md) ·
   [Approved TUI direction and probe](docs/pi-tui-probe.md).
 - Fork releases are manual `pi-v*` draft prereleases; upstream `v*` tags do not
@@ -38,14 +39,58 @@ The upstream feature documentation follows. Its Claude-agent descriptions apply 
 legacy Claude agents; new agents default to Pi in this fork. Use copies of `.ccnvs` files when
 trying the fork: explicit file saves still write to the selected workspace folder.
 
-## Local macOS rebuild + Spotlight installation
+## Install (macOS)
 
-Quit ccanvas Pi, then run from this repository:
+### 1. Prerequisites (one-time)
+
+| Need | Check | Get it |
+| --- | --- | --- |
+| Xcode Command Line Tools | `xcode-select -p` | `xcode-select --install` |
+| Node.js 20+ (includes npm) | `node -v` | [nodejs.org](https://nodejs.org) or `brew install node` |
+| **Rust** 1.77.2+ (`cargo`, `rustc`) | `cargo -V` | [rustup.rs](https://rustup.rs) or `brew install rust` |
+| Pi, for Pi agents | `pi --version` | Not needed to build. ccanvas never installs Pi. |
+
+The desktop app is a Tauri app, so building it needs Rust as well as Node.
+
+### 2. Get the code and install dependencies
 
 ```sh
-npm run app:install             # fast unsigned debug build + install
-npm run app:build               # release build + install
-npm run app:build -- --debug    # explicit debug rebuild + install
+git clone https://github.com/chunkanglu/ccanvas.git
+cd ccanvas
+npm install
+cargo fetch --locked --manifest-path src-tauri/Cargo.toml   # download Rust crates
+```
+
+App builds run Cargo offline (`--offline --locked`), so fetch crates once
+after cloning, and again whenever `src-tauri/Cargo.lock` changes.
+
+### 3. Build and install into Spotlight
+
+```sh
+npm run app:build
+```
+
+This makes a release build and installs it as **`~/Applications/ccanvas Pi.app`**.
+Open it from Spotlight (⌘Space, then type **ccanvas Pi**).
+
+### Updating
+
+Quit ccanvas Pi first; the installer refuses to replace a running app. Then:
+
+```sh
+git pull
+npm install
+cargo fetch --locked --manifest-path src-tauri/Cargo.toml   # only if Cargo.lock changed
+npm run app:build
+```
+
+### Build variants
+
+```sh
+npm run app:build               # release build + install (recommended)
+npm run app:install             # faster unsigned debug build + install
+npm run app:build -- --debug    # same as app:install
+npm run app                     # hot-reload dev window; installs nothing
 ```
 
 Successful local macOS builds replace **`~/Applications/ccanvas Pi.app`**, register
@@ -54,7 +99,7 @@ The installer checks bundle identity, refuses running apps/unrelated destination
 and stages a complete replacement so obsolete resources do not accumulate.
 No administrator rights, automatic quit/relaunch, signing or notarization.
 
-Builds use existing cached dependencies (`--offline --locked`). A failed build or
+Builds use the fetched dependencies (`--offline --locked`). A failed build or
 missing/stale bundle never installs an older artifact. CI and non-macOS builds do
 not install locally. Use `CCANVAS_SKIP_APP_INSTALL=1` to skip installation or
 `npm run app:bundle -- ...` for raw Tauri packaging/custom targets/signing without
@@ -98,7 +143,7 @@ oriented.
 ```bash
 npm install
 npm run app        # dev: launches the native window
-npm run app:build  # fork: release build + local macOS install (see above)
+npm run app:build  # fork: release build + local macOS install (see "Install (macOS)" above)
 ```
 
 The desktop build is the real thing: native folder/file dialogs, native file

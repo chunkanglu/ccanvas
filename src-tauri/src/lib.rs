@@ -21,6 +21,14 @@ pub fn run() {
         .manage(PortalManager::default())
         .manage(WatchManager::default())
         .setup(|app| {
+            // Plain-terminal restart snapshots: prune stale ones, then save
+            // changed sessions every 30 s so a crash or force-quit loses little.
+            pty::snapshot::prune(app.handle());
+            let snapshot_app = app.handle().clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_secs(30));
+                pty::save_snapshots(&snapshot_app, true);
+            });
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
@@ -72,6 +80,11 @@ pub fn run() {
             watch::watch_start,
             watch::watch_stop,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                pty::save_snapshots(app, false);
+            }
+        });
 }
